@@ -1,0 +1,23 @@
+[package]
+name = "shreduler"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ian Ker-Seymer <ian.kerseymer@shopify.com>"]
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bitflags = "2.3.1"
+futures = "0.3.28"
+magnus = { version = "0.5", features = ["rb-sys-interop"] }
+rb-sys = "0.9.77"
+tokio = { version = "1.28.2", features = ["full"] }
+
+[dev-dependencies]
+rb-sys-test-helpers = "0.1.4"
+
+[build-dependencies]
+rb-sys-env = "0.1.2"
