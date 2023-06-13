@@ -13,8 +13,11 @@ crate-type = ["cdylib"]
 bitflags = "2.3.1"
 futures = "0.3.28"
 magnus = { version = "0.5", features = ["rb-sys-interop"] }
+magnus-macros = "0.4.1"
 rb-sys = "0.9.77"
 tokio = { version = "1.28.2", features = ["full"] }
+tracing = "0.1.37"
+tracing-subscriber = "0.3.17"
 
 [dev-dependencies]
 rb-sys-test-helpers = "0.1.4"

@@ -21,4 +21,4 @@ RbSys::ExtensionTask.new("shreduler") do |ext|
   ext.lib_dir = "lib/shreduler"
 end
 
-task default: %i[compile test rubocop]
+task default: %i[compile test]

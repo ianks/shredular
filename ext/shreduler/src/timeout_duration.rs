@@ -1,59 +1,76 @@
-use magnus::{exception::runtime_error, rb_sys::AsRawValue, TryConvert, Value};
+use futures::{task::noop_waker, FutureExt};
+use magnus::{exception::runtime_error, rb_sys::AsRawValue, TryConvert, Value, QNIL};
 use std::{
     future::{Future, IntoFuture},
     pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
 };
+use tokio::time::Instant;
+use tracing::debug;
 
 /// Represents the amount of time to wait before timing out (in seconds to match Ruby semantics).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TimeoutDuration(std::time::Duration);
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TimeoutDuration(tokio::time::Instant);
 
-unsafe impl Send for TimeoutDuration {}
+const FAR_FUTURE: Duration = Duration::from_secs(86400 * 365 * 30);
 
 impl TimeoutDuration {
-    /// The amount of time to wait before timing out.
-    pub fn duration(self) -> std::time::Duration {
-        self.0
-    }
-}
-
-impl Default for TimeoutDuration {
-    fn default() -> Self {
-        Self(std::time::Duration::from_secs(60))
+    /// A timeout duration of many, many seconds.
+    pub fn forever() -> Self {
+        Self(Instant::now() + FAR_FUTURE)
     }
 }
 
 impl IntoFuture for TimeoutDuration {
+    type IntoFuture = TimeoutDurationFuture;
     type Output = Result<Value, magnus::Error>;
 
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output>>>;
-
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move {
-            tokio::time::sleep(self.duration()).await;
-
-            Err(magnus::Error::new(
-                runtime_error(),
-                format!("Timeout after {}", self),
-            ))
-        })
+        let duration = self.0 - Instant::now();
+        debug!(?duration, "Creating timeout duration future");
+        TimeoutDurationFuture(Box::pin(tokio::time::sleep(duration)))
     }
 }
 
-impl std::fmt::Display for TimeoutDuration {
+#[derive(Debug)]
+pub struct TimeoutDurationFuture(Pin<Box<tokio::time::Sleep>>);
+
+impl Future for TimeoutDurationFuture {
+    type Output = Result<Value, magnus::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let self_ = self.get_mut();
+        let fut = &mut self_.0;
+        tokio::pin!(fut);
+
+        match fut.poll(cx) {
+            Poll::Ready(_) => Poll::Ready(Ok(*QNIL)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl std::fmt::Debug for TimeoutDuration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}s", self.0.as_secs_f64())
+        write!(f, "{:?}", self.0)
     }
 }
 
 impl TryConvert for TimeoutDuration {
     fn try_convert(value: Value) -> Result<Self, magnus::Error> {
-        if value.class().as_raw() == magnus::class::integer().as_raw() {
+        let now = Instant::now();
+
+        let until_duration = if value.is_nil() {
+            FAR_FUTURE
+        } else if value.class().as_raw() == magnus::class::integer().as_raw() {
             let value: u64 = value.try_convert()?;
-            Ok(Self(std::time::Duration::from_secs(value)))
+            std::time::Duration::from_secs(value)
         } else {
             let float = value.try_convert::<f64>()?;
-            Ok(Self(std::time::Duration::from_secs_f64(float)))
-        }
+            std::time::Duration::from_secs_f64(float)
+        };
+
+        Ok(Self(now + until_duration))
     }
 }

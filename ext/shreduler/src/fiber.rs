@@ -1,10 +1,15 @@
+use std::marker::PhantomData;
+
 use magnus::{
+    block::Proc,
+    class::object,
+    exception::runtime_error,
     rb_sys::{protect, AsRawValue, FromRawValue},
-    ArgList, RString, TryConvert, Value,
+    ArgList, IntoValue, Module, RClass, RHash, RString, Symbol, TryConvert, Value,
 };
 use rb_sys::{rb_fiber_transfer, rb_fiber_yield};
 
-pub use self::state::{Running, State, Suspended, Terminated};
+pub use self::state::{Running, State, Suspended, Terminated, Unchecked};
 
 mod state {
     /// Marker trait for the different states of a fiber.
@@ -24,16 +29,21 @@ mod state {
     #[derive(Clone, Copy, Debug)]
     pub struct Terminated;
     impl State for Terminated {}
+
+    /// Fiber in unknown state.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Unchecked;
+    impl State for Unchecked {}
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-pub struct Fiber<S: state::State>(Value, std::marker::PhantomData<S>);
+pub struct Fiber<S: state::State>(Value, PhantomData<S>);
 
 impl Fiber<Running> {
     /// The currently active Ruby fiber.
     pub fn current() -> Self {
-        let marker = std::marker::PhantomData::<Running>;
+        let marker = PhantomData::<Running>;
         unsafe { Self(Value::from_raw(rb_sys::rb_fiber_current()), marker) }
     }
 
@@ -50,7 +60,7 @@ impl Fiber<Running> {
 
         Ok(Fiber(
             unsafe { Value::from_raw(fiber) },
-            std::marker::PhantomData::<Suspended>,
+            PhantomData::<Suspended>,
         ))
     }
 
@@ -146,12 +156,12 @@ impl Fiber<Suspended> {
     ///
     /// It is a failure to call this function against a fiber which is resuming,
     /// have never run yet, or has already finished running.
-    pub fn raise(
+    pub fn raise<T: AsRef<str>>(
         self,
         exception_class: magnus::ExceptionClass,
-        message: String,
+        message: T,
     ) -> Result<Value, magnus::Error> {
-        let args = [*exception_class, *RString::new(&message)];
+        let args = [*exception_class, *RString::new(message.as_ref())];
 
         let fiber = protect(|| unsafe {
             rb_sys::rb_fiber_raise(self.0.as_raw(), args.len() as _, args.as_ptr() as _)
@@ -161,24 +171,78 @@ impl Fiber<Suspended> {
     }
 }
 
-impl<S: State> Fiber<S> {
-    /// Transmutes the fiber so it can be interacted with as if it were suspended.
-    pub unsafe fn as_suspended(&self) -> Fiber<Suspended> {
-        Fiber(self.0, std::marker::PhantomData::<Suspended>)
+impl Fiber<Unchecked> {
+    pub fn check_suspended(&self) -> Result<Fiber<Suspended>, magnus::Error> {
+        if !self.is_alive() {
+            return Err(magnus::Error::new(runtime_error(), "fiber not alive"));
+        }
+
+        if self.is_current() {
+            return Err(magnus::Error::new(runtime_error(), "fiber active"));
+        }
+
+        Ok(Fiber(self.0, PhantomData::<Suspended>))
     }
 }
 
-fn guard_is_fiber(value: Value) -> Result<Value, magnus::Error> {
-    if !unsafe { rb_sys::rb_obj_is_fiber(value.as_raw()) == rb_sys::Qtrue.into() } {
-        return Err(magnus::Error::new(
-            magnus::exception::type_error(),
-            format!("no implicit conversion of {} into Fiber", unsafe {
-                value.classname()
-            }),
-        ));
+impl<S: State> Fiber<S> {
+    /// Creates a new fiber from a block.
+    pub fn new(block: Proc) -> Result<Fiber<Suspended>, magnus::Error> {
+        let fiber = fiber_class().funcall_with_block("new", (), block)?;
+
+        Ok(Fiber(fiber, PhantomData::<Suspended>))
     }
 
-    Ok(value)
+    pub fn new_nonblocking(block: Proc) -> Result<Fiber<Suspended>, magnus::Error> {
+        let kwargs = RHash::new();
+        kwargs.aset(Symbol::new("blocking"), false)?;
+        let fiber = fiber_class().funcall_with_block("new", (kwargs,), block)?;
+
+        Ok(Fiber(fiber, PhantomData::<Suspended>))
+    }
+
+    fn from_value(value: Value) -> Result<Fiber<Unchecked>, magnus::Error> {
+        if !unsafe { rb_sys::rb_obj_is_fiber(value.as_raw()) == rb_sys::Qtrue.into() } {
+            return Err(magnus::Error::new(
+                magnus::exception::type_error(),
+                format!("no implicit conversion of {} into Fiber", unsafe {
+                    value.classname()
+                }),
+            ));
+        }
+
+        Ok(Fiber(value, PhantomData::<Unchecked>))
+    }
+
+    unsafe fn from_value_unchecked<T: State>(value: Value) -> Fiber<T> {
+        Fiber(value, PhantomData::<T>)
+    }
+    /// Transmutes the fiber so it can be interacted with as if it were suspended.
+    pub unsafe fn as_suspended(&self) -> Fiber<Suspended> {
+        Fiber(self.0, PhantomData::<Suspended>)
+    }
+
+    /// Transmute this fiber to be in an "unchecked" state, so it can be used
+    /// without presumption.
+    pub fn as_unchecked(&self) -> Fiber<Unchecked> {
+        Fiber(self.0, PhantomData::<Unchecked>)
+    }
+
+    pub fn is_current(&self) -> bool {
+        Fiber::current().as_raw() == self.0.as_raw()
+    }
+
+    pub fn is_alive(&self) -> bool {
+        unsafe { rb_sys::rb_fiber_alive_p(self.0.as_raw()) == rb_sys::Qtrue.into() }
+    }
+}
+
+impl<S: State> std::ops::Deref for Fiber<S> {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 fn guard_is_alive(value: Value) -> Result<Value, magnus::Error> {
@@ -192,56 +256,12 @@ fn guard_is_alive(value: Value) -> Result<Value, magnus::Error> {
     Ok(value)
 }
 
-fn guard_is_current(value: Value) -> Result<Value, magnus::Error> {
-    if !Fiber::current().0.as_raw() == value.as_raw() {
-        return Err(magnus::Error::new(
-            magnus::exception::arg_error(),
-            "not the current fiber",
-        ));
-    }
-
-    Ok(value)
-}
-
-impl TryConvert for Fiber<Suspended> {
-    fn try_convert(value: Value) -> Result<Self, magnus::Error> {
-        guard_is_fiber(value)?;
-        guard_is_alive(value)?;
-
-        if guard_is_current(value).is_ok() {
-            return Err(magnus::Error::new(
-                magnus::exception::arg_error(),
-                "current fiber cannot be suspended",
-            ));
-        }
-
-        Ok(Self(value, std::marker::PhantomData::<Suspended>))
-    }
-}
-
-impl TryConvert for Fiber<Terminated> {
-    fn try_convert(value: Value) -> Result<Self, magnus::Error> {
-        guard_is_fiber(value)?;
-
-        if guard_is_alive(value).is_ok() {
-            return Err(magnus::Error::new(
-                magnus::exception::arg_error(),
-                "dead fiber cannot be resumed",
-            ));
-        }
-
-        Ok(Self(value, std::marker::PhantomData::<Terminated>))
-    }
-}
-
-impl TryConvert for Fiber<Running> {
-    fn try_convert(value: Value) -> Result<Self, magnus::Error> {
-        guard_is_fiber(value)?;
-        guard_is_alive(value)?;
-        guard_is_current(value)?;
-
-        Ok(Self(value, std::marker::PhantomData::<Running>))
-    }
+fn fiber_class() -> RClass {
+    *magnus::memoize!(RClass: {
+        let c: RClass = object().const_get("Fiber").expect("Fiber class not found");
+        magnus::gc::register_mark_object(*c);
+        c
+    })
 }
 
 impl<S: State> std::hash::Hash for Fiber<S> {
