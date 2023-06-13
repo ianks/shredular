@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description = "Write a longer description or delete this line."
   spec.homepage = "https://github.com/Shopify/shreduler"
   spec.license = "MIT"
-  spec.required_ruby_version = ">= 2.6.0"
+  spec.required_ruby_version = ">= 3.2.0"
   spec.required_rubygems_version = ">= 3.3.11"
 
   spec.metadata["allowed_push_host"] = "Set to your gem server 'https://example.com'"
@@ -38,4 +38,5 @@ Gem::Specification.new do |spec|
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html
+  spec.metadata["rubygems_mfa_required"] = "true"
 end

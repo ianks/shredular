@@ -8,6 +8,8 @@ GEM
   specs:
     ast (2.4.2)
     json (2.6.3)
+    maxitest (5.0.0)
+      minitest (>= 5.14.0, < 5.19.0)
     minitest (5.18.0)
     parallel (1.23.0)
     parser (3.2.2.1)
@@ -38,7 +40,7 @@ PLATFORMS
   arm64-darwin-22
 
 DEPENDENCIES
-  minitest (~> 5.0)
+  maxitest (~> 5.0)
   rake (~> 13.0)
   rake-compiler
   rb_sys (~> 0.9.63)

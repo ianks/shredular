@@ -1,4 +1,7 @@
-use magnus::{block::Proc, exception::runtime_error, IntoValue, RArray, TryConvert, Value};
+use magnus::{
+    block::Proc, exception::runtime_error, typed_data::Obj, IntoValue, RArray, RString, TryConvert,
+    Value,
+};
 use std::{
     cell::{RefCell, RefMut},
     collections::BTreeMap,
@@ -74,12 +77,12 @@ impl From<IoInterests> for tokio::io::Interest {
 /// - The scheduler runs into a wait loop, checking all the blocked fibers (which it
 ///   has registered on hook calls) and resuming them when the awaited resource is
 ///   ready (e.g. I/O ready or sleep time elapsed).
-pub trait Scheduler {
+pub trait Scheduler: Sized {
     /// Resolves a hostname to a list of IP addresses, returning `None` if the
     /// hostname cannot be resolved.
     ///
     /// Returns a Future that resolves to a list of IP addresses.
-    fn address_resolve(&self, hostname: String) -> Result<Value, magnus::Error>;
+    fn address_resolve(&self, hostname: RString) -> Result<Value, magnus::Error>;
 
     // /// Invoked by methods like Thread.join, and by Mutex, to signify that
     // /// current Fiber is blocked until further notice (e.g. unblock) or until
@@ -100,7 +103,7 @@ pub trait Scheduler {
     // fn close(self);
 
     /// Schedules the given Proc to run in a separate non-blocking fiber.
-    fn fiber(&self, block: Proc) -> Result<Fiber<Unchecked>, magnus::Error>;
+    fn fiber(&self, args: &[Value]) -> Result<Value, magnus::Error>;
 
     // /// Reads data from an IO object into a buffer at a specified offset.
     // fn io_pread(
@@ -182,7 +185,14 @@ pub trait Scheduler {
     // fn io_write(&self, io: RawFd, buffer: &[u8], length: usize) -> Result<usize, i32>;
 
     /// Puts the current fiber to sleep for the specified duration.
-    fn kernel_sleep(&self, duration: TimeoutDuration);
+    fn kernel_sleep(&self, duration: TimeoutDuration) -> Result<Value, magnus::Error>;
+
+    /// Called when the current thread exits. The scheduler is expected to
+    /// implement this method in order to allow all waiting fibers to finalize
+    /// their execution.
+    ///
+    /// The suggested pattern is to implement the main event loop in the close method.
+    fn close(rb_self: Obj<Self>) -> Result<(), magnus::Error>;
 
     // /// Waits for the specified process with the given flags.
     // fn process_wait(&self, pid: u32, flags: i32) -> Result<Value, i32>;

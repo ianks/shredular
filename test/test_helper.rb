@@ -3,7 +3,7 @@
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 
 require "shreduler"
-require "minitest/autorun"
+require "maxitest/autorun"
 
 module Minitest
   class Test
@@ -19,19 +19,16 @@ module Minitest
       end
     end
 
-    def with_scheduler
-      @scheduler = TokioScheduler.new
-      Fiber.set_scheduler(@scheduler)
-      yield
+    def with_scheduler(global:)
+      raise ArgumentError, "block is required" unless block_given?
+
+      @scheduler = Shredular.new
+      @scheduler.close unless global
+      Fiber.set_scheduler(@scheduler) if global
+      yield(@scheduler)
     ensure
       @scheduler.shutdown
-      Fiber.set_scheduler(nil)
-    end
-
-    def spawn_fiber(blocking: true, &block)
-      fiber = Fiber.new(blocking: blocking, &block)
-      fiber.resume
-      fiber
+      Fiber.set_scheduler(nil) if global
     end
   end
 end
