@@ -1,18 +1,13 @@
 use magnus::{
-    block::Proc, exception::runtime_error, typed_data::Obj, IntoValue, RArray, RString, TryConvert,
+    exception::runtime_error, typed_data::Obj, IntoValue, RString, TryConvert,
     Value,
 };
 use std::{
-    cell::{RefCell, RefMut},
-    collections::BTreeMap,
-    future::{Future, IntoFuture},
     os::fd::RawFd,
-    task::{Context, Poll},
 };
-use tokio::io::unix::AsyncFd;
+
 
 use crate::{
-    fiber::{Fiber, Running, State, Suspended, Unchecked},
     timeout_duration::TimeoutDuration,
 };
 

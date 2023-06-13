@@ -1,18 +1,13 @@
-#![allow(unused)] // TODO: Remove this line
-
 mod fiber;
+mod fiber_future;
 mod scheduler_interface;
 mod timeout_duration;
 mod tokio_scheduler;
 
-use magnus::{define_module, function, prelude::*, Error};
+use magnus::Error;
 
 #[macro_use]
 extern crate magnus;
-
-fn hello(subject: String) -> String {
-    format!("Hello from Rust, {}!", subject)
-}
 
 #[magnus::init]
 fn init() -> Result<(), Error> {

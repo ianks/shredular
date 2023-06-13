@@ -1,13 +1,5 @@
-use futures::{task::noop_waker, FutureExt};
-use magnus::{exception::runtime_error, rb_sys::AsRawValue, TryConvert, Value, QNIL};
-use std::{
-    future::{Future, IntoFuture},
-    pin::Pin,
-    task::{Context, Poll},
-    time::Duration,
-};
-use tokio::time::Instant;
-use tracing::debug;
+use magnus::{rb_sys::AsRawValue, TryConvert, Value};
+use std::time::Duration;
 
 /// Represents the amount of time to wait before timing out (in seconds to match Ruby semantics).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -16,11 +8,6 @@ pub struct TimeoutDuration(tokio::time::Duration);
 const FAR_FUTURE: Duration = Duration::from_secs(86400 * 365 * 30);
 
 impl TimeoutDuration {
-    /// A timeout duration of many, many seconds.
-    pub fn forever() -> Self {
-        Self(FAR_FUTURE)
-    }
-
     pub fn into_std(self) -> std::time::Duration {
         self.0
     }

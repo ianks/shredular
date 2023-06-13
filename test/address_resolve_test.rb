@@ -21,15 +21,19 @@ class AddressResolveTest < Minitest::Test
 
       with_scheduler(global: false) do |scheduler|
         scheduler.fiber do
-          result = scheduler.address_resolve(host)
-          called = true
-          expected = Resolv.getaddresses(host.split("%", 2).first)
+          5.times do
+            scheduler.fiber do
+              result = scheduler.address_resolve(host)
+              called = true
+              expected = Resolv.getaddresses(host.split("%", 2).first)
 
-          expected.each do |expected_item|
-            assert_includes(result, expected_item)
+              expected.each do |expected_item|
+                assert_includes(result, expected_item)
+              end
+
+              assert(result.length >= expected.length)
+            end
           end
-
-          assert(result.length >= expected.length)
         end
       end
 
