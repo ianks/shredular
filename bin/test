@@ -1,0 +1,19 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+
+options = { log_level: "error" }
+
+OptionParser.new do |opts|
+  opts.banner = "Usage: test.rb [options]"
+
+  opts.on("--log=level", "Set log level") do |level|
+    options[:log_level] = level
+  end
+end.parse!
+
+system("bundle exec rake compile")
+ENV["RUST_LOG"] = options[:log_level]
+ENV["RUBYOPT"] = "-I#{File.expand_path("../test", __dir__)}"
+exec("bundle exec mtest #{ARGV[0] || "test"}")

@@ -32,3 +32,18 @@ module Minitest
     end
   end
 end
+
+module GlobalSchedulerHooks
+  def before_setup
+    @scheduler = Shredular.new
+    Fiber.set_scheduler(@scheduler)
+    super
+  end
+
+  def after_teardown
+    super
+    @scheduler.close
+    @scheduler.shutdown
+    Fiber.set_scheduler(nil)
+  end
+end

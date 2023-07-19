@@ -10,6 +10,27 @@ use tracing::trace;
 use crate::fiber::{Fiber, Suspended};
 
 pub type RubyFuture = Pin<Box<dyn Future<Output = Result<Value, Error>>>>;
+pub type ResumableFiberFuture = Pin<Box<dyn Future<Output = ResumableFiber>>>;
+
+#[derive(Debug)]
+#[must_use]
+pub struct ResumableFiber {
+    fiber: Fiber<Suspended>,
+    value: Result<Value, Error>,
+}
+
+impl ResumableFiber {
+    fn new(fiber: Fiber<Suspended>, value: Result<Value, Error>) -> Self {
+        Self { fiber, value }
+    }
+
+    pub fn resume(self) -> Result<Value, Error> {
+        match self.value {
+            Ok(value) => self.fiber.transfer((value,)),
+            err => err,
+        }
+    }
+}
 
 /// A future that resumes a fiber when it is ready.
 #[repr(C)]
@@ -32,7 +53,7 @@ impl FiberFuture {
 }
 
 impl Future for FiberFuture {
-    type Output = Result<Value, Error>;
+    type Output = ResumableFiber;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let fut = &mut self.future;
@@ -43,9 +64,13 @@ impl Future for FiberFuture {
             Poll::Ready(result) => match result {
                 Ok(value) => {
                     trace!(result = ?value, "future ready to resume in fiber");
-                    Poll::Ready(self.fiber.transfer((value,)))
+                    let resumable = ResumableFiber::new(self.fiber, Ok(value));
+                    Poll::Ready(resumable)
                 }
-                Err(e) => Poll::Ready(self.fiber.raise(e)),
+                Err(e) => {
+                    let resumable = ResumableFiber::new(self.fiber, Err(e));
+                    Poll::Ready(resumable)
+                }
             },
         }
     }

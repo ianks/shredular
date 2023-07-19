@@ -1,31 +1,35 @@
 use std::{
     cell::{Cell, UnsafeCell},
+    mem::transmute,
     os::fd::RawFd,
-    task::Context,
+    task::{Context, Poll},
 };
 
-use futures::{stream::FuturesUnordered, task::noop_waker, Future};
+use futures::{stream::FuturesUnordered, task::noop_waker, Future, Stream};
 use magnus::{
-    block::Proc,
+    block::{block_proc, Proc},
     define_class,
-    exception::standard_error,
+    exception::{arg_error, runtime_error, standard_error},
     gc, scan_args,
     typed_data::{DataTypeBuilder, Obj},
     DataTypeFunctions, Error, ExceptionClass, Integer, IntoValue, RArray, RClass, RString,
     TypedData, Value,
 };
 use magnus::{prelude::*, DataType};
-use tokio::{io::unix::AsyncFd, runtime::Runtime};
-use tracing::{debug, trace};
+use tokio::{
+    io::unix::AsyncFd,
+    runtime::{EnterGuard, Runtime},
+};
+use tracing::{debug, trace, warn};
 
 use crate::{
     fiber::{Fiber, Suspended, Unknown},
-    fiber_future::{FiberFuture, RubyFuture},
+    fiber_future::{FiberFuture, ResumableFiberFuture},
     scheduler_interface::{IoInterests, Scheduler},
     timeout_duration::TimeoutDuration,
 };
 
-type TaskList = FuturesUnordered<RubyFuture>;
+type TaskList = FuturesUnordered<ResumableFiberFuture>;
 
 #[derive(Debug, Clone, Copy)]
 enum SchedulerStatus {
@@ -40,6 +44,7 @@ pub struct TokioScheduler {
     main_fiber: Fiber<Unknown>,
     runtime: Option<Runtime>,
     futures_unordered: UnsafeCell<TaskList>,
+    enter_guard: Option<EnterGuard<'static>>,
 }
 
 // TODO: remove this by implementing a proper `Send` trait for `TaskList`
@@ -80,7 +85,7 @@ impl TokioScheduler {
     /// poll futures: yielding control to other fibers when a future is not ready,
     /// and resuming the fiber when the future is ready.
     /// Creates a new Tokio scheduler.
-    pub fn new() -> Result<Self, Error> {
+    pub fn new() -> Result<Obj<Self>, Error> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_io()
@@ -88,13 +93,27 @@ impl TokioScheduler {
             .build()
             .map_err(|e| Error::new(base_error(), format!("{e}")))?;
 
-        Ok(Self {
+        let enter_guard = runtime.enter();
+        // SAFETY: the lifetime of the guard is tied to the lifetime of this
+        // scheduler and Ruby object, so we consider it static.
+        let enter_guard = unsafe { transmute::<_, EnterGuard<'static>>(enter_guard) };
+
+        let scheduler = Self {
             status: Cell::new(SchedulerStatus::Stopped),
             event_loop_fiber: Cell::new(None),
             main_fiber: Fiber::current().as_unchecked(),
             runtime: Some(runtime),
             futures_unordered: Default::default(),
-        })
+            enter_guard: Some(enter_guard),
+        };
+
+        let scheduler = Obj::wrap(scheduler);
+        let event_loop_fiber = Self::build_event_loop_fiber(scheduler)?;
+        scheduler
+            .get()
+            .set_event_loop_fiber(event_loop_fiber.as_unchecked());
+
+        Ok(scheduler)
     }
 
     /// Polls the event loop fiber once.
@@ -102,16 +121,31 @@ impl TokioScheduler {
     /// # Safety
     /// Caller must ensure this method is only called from event loop fiber.
     unsafe fn run_once(&self) -> Result<(), Error> {
-        let _rt = self.runtime().expect("runtime to be initialized").enter();
         let tasks = self.futures_unordered_mut();
+        let waker = noop_waker();
+        let ctx = &mut Context::from_waker(&waker);
         tokio::pin!(tasks);
 
-        for task in tasks.iter_mut() {
-            trace!("polling task");
-            let waker = noop_waker();
-            let mut context = Context::from_waker(&waker);
-            tokio::pin!(task);
-            let _ = task.poll(&mut context);
+        loop {
+            let task = tasks.as_mut().poll_next(ctx);
+            match task {
+                Poll::Ready(Some(task)) => {
+                    trace!("task is ready");
+                    let result = task.resume();
+                    trace!("task resumed with {:?}", result);
+                }
+                Poll::Ready(None) => {
+                    trace!("no more tasks");
+                    self.status.set(SchedulerStatus::Stopped);
+                    *tasks = &mut FuturesUnordered::default();
+                    break;
+                }
+                Poll::Pending => {
+                    trace!("task is pending");
+                    // set a new futures list to avoid borrowing self
+                    break;
+                }
+            }
         }
 
         Ok(())
@@ -152,17 +186,30 @@ impl TokioScheduler {
     ) -> Result<Value, Error> {
         {
             let current_task_count = self.futures_unordered().len();
-            trace!(current_task_count = ?current_task_count, "registering task with scheduler");
+            debug!(current_task_count = ?current_task_count, "registering task with scheduler");
             let task_fiber = unsafe { Fiber::current().as_suspended() };
             let fiber_future = FiberFuture::new(task_fiber, task);
 
             self.futures_unordered_mut().push(Box::pin(fiber_future));
         }
 
-        self.event_loop_fiber()?.transfer(())
+        match self.event_loop_fiber() {
+            Ok(event_loop_fiber) => {
+                trace!("transferring to event loop fiber");
+                event_loop_fiber.transfer(())
+            }
+            Err(e) => {
+                warn!("failed to get event loop fiber: {:?}", e);
+                Err(e)
+            }
+        }
     }
 
     fn drop_runtime(&mut self) {
+        if let Some(enter_guard) = self.enter_guard.take() {
+            drop(enter_guard);
+        }
+
         if let Some(rt) = self.runtime.take() {
             rt.shutdown_timeout(std::time::Duration::from_secs(5));
         }
@@ -183,32 +230,38 @@ impl TokioScheduler {
             main_fiber.transfer(()).expect("main fiber cant be resumed");
         }
     }
+
+    fn build_event_loop_fiber(rb_self: Obj<Self>) -> Result<Fiber<Suspended>, Error> {
+        let proc = Proc::from_fn(move |_args, _block| {
+            let sched = rb_self.get();
+            sched.status.set(SchedulerStatus::Running);
+
+            while matches!(sched.status.get(), SchedulerStatus::Running) {
+                // SAFETY: we are in the event loop fiber so we can call run_once
+                unsafe { sched.run_once()? };
+            }
+
+            sched.main_fiber.check_suspended()?.transfer(())?;
+
+            Ok(())
+        });
+
+        Fiber::<Suspended>::new(proc)
+    }
 }
 
 impl Scheduler for TokioScheduler {
     fn close(rb_self: Obj<Self>) -> Result<(), Error> {
+        debug!("closing scheduler");
         let sched = rb_self.get();
         let current_root = sched.event_loop_fiber.get();
 
         match current_root {
-            Some(_event_loop_fiber) => Ok(()),
-            None => {
-                let proc = Proc::from_fn(move |_args, _block| {
-                    let sched = rb_self.get();
-                    sched.status.set(SchedulerStatus::Running);
-
-                    while matches!(sched.status.get(), SchedulerStatus::Running) {
-                        // SAFETY: we are in the event loop fiber so we can call run_once
-                        unsafe { sched.run_once()? };
-                    }
-
-                    Ok(())
-                });
-
-                let event_loop_fiber = Fiber::<Suspended>::new(proc)?.as_unchecked();
-                sched.set_event_loop_fiber(event_loop_fiber);
+            Some(event_loop_fiber) => {
+                event_loop_fiber.check_suspended()?.transfer(())?;
                 Ok(())
             }
+            None => Ok(()),
         }
     }
 
@@ -270,15 +323,15 @@ impl Scheduler for TokioScheduler {
         self.register_task(with_timeout(timeout, base_future))
     }
 
-    fn fiber(&self, args: &[Value]) -> Result<Value, Error> {
+    fn fiber(&self, args: &[Value]) -> Result<Fiber<Suspended>, Error> {
         let args = scan_args::scan_args::<(), (), (), (), (), Proc>(args)?;
         let block: Proc = args.block;
-        let fiber = Fiber::<Suspended>::new_nonblocking(block)?;
-        fiber.transfer(())
+        Fiber::<Suspended>::spawn_nonblocking(block)
     }
 
     fn kernel_sleep(&self, duration: TimeoutDuration) -> Result<Value, Error> {
-        let _rt = self.runtime().expect("runtime to be initialized").enter();
+        trace!("kernel_sleep called with {:?}", duration.into_std());
+        let _rt = self.runtime().expect("runtime to be initialized");
 
         self.register_task(async move {
             let dur = duration.into_std();
@@ -286,6 +339,38 @@ impl Scheduler for TokioScheduler {
             let ruby_int = Integer::from_u64(dur.as_secs());
             Ok(*ruby_int)
         })
+    }
+
+    fn timeout_after(
+        &self,
+        duration: TimeoutDuration,
+        exception_class: ExceptionClass,
+        exception_arguments: RArray,
+    ) -> Result<Value, magnus::Error> {
+        let dur = duration.into_std();
+
+        let Ok(block) = block_proc() else {
+            return Err(Error::new(arg_error(), "no block given"));
+        };
+
+        let base_future = async move {
+            debug!("starting timeout_after with {:?}", dur);
+            let result = block.call(())?;
+            Ok(result)
+        };
+
+        let timeout_future = async move {
+            match tokio::time::timeout(dur, base_future).await {
+                Ok(result) => result,
+                Err(_) => {
+                    let exception =
+                        exception_class.new_instance(unsafe { exception_arguments.as_slice() })?;
+                    Err(Error::Exception(exception))
+                }
+            }
+        };
+
+        self.register_task(timeout_future)
     }
 }
 
@@ -312,6 +397,13 @@ pub fn base_error() -> ExceptionClass {
     })
 }
 
+pub fn todo(_rb_self: Value) -> Result<(), Error> {
+    Err(Error::new(
+        runtime_error(),
+        "Not yet implemented".to_string(),
+    ))
+}
+
 pub fn init() -> Result<(), Error> {
     tracing_subscriber::fmt::init(); // TODO: dont make this global
     let c = TokioScheduler::class();
@@ -326,6 +418,11 @@ pub fn init() -> Result<(), Error> {
     c.define_method("shutdown", method!(TokioScheduler::shutdown, 0))?;
     c.define_method("close", method!(TokioScheduler::close, 0))?;
     c.define_method("fiber", method!(TokioScheduler::fiber, -1))?;
+    c.define_method("timeout_after", method!(TokioScheduler::timeout_after, 3))?;
+
+    // TODO: remove this
+    c.define_method("block", method!(todo, 0))?;
+    c.define_method("unblock", method!(todo, 0))?;
 
     Ok(())
 }

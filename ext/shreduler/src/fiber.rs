@@ -5,7 +5,7 @@ use magnus::{
     class::object,
     exception::{runtime_error, type_error},
     rb_sys::{protect, AsRawValue, FromRawValue},
-    ArgList, Error, Module, RClass, RHash, RString, Symbol, Value,
+    ArgList, Error, IntoValue, Module, RClass, RHash, RString, Symbol, Value,
 };
 use rb_sys::{rb_fiber_transfer, rb_fiber_yield};
 
@@ -159,6 +159,7 @@ impl Fiber<Suspended> {
     ///
     /// It is a failure to call this function against a fiber which is resuming,
     /// have never run yet, or has already finished running.
+    #[allow(dead_code)]
     pub fn raise(self, error: Error) -> Result<Value, Error> {
         let result = match error {
             Error::Error(klass, message) => {
@@ -204,6 +205,13 @@ impl<S: State> Fiber<S> {
         let fiber = fiber_class().funcall_with_block("new", (kwargs,), block)?;
 
         Ok(Fiber(fiber, PhantomData::<Suspended>))
+    }
+
+    pub fn spawn_nonblocking(block: Proc) -> Result<Fiber<Suspended>, Error> {
+        let fiber = Fiber::<Suspended>::new_nonblocking(block)?;
+        fiber.transfer(())?;
+
+        Ok(fiber)
     }
 
     #[allow(dead_code)]
@@ -283,5 +291,11 @@ impl<S: State> PartialOrd for Fiber<S> {
 impl<S: State> std::cmp::Ord for Fiber<S> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.as_raw().cmp(&other.0.as_raw())
+    }
+}
+
+impl<S: State> IntoValue for Fiber<S> {
+    fn into_value_with(self, _handle: &magnus::Ruby) -> Value {
+        self.0
     }
 }

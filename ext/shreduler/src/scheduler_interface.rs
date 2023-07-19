@@ -1,13 +1,11 @@
 use magnus::{
-    exception::runtime_error, typed_data::Obj, IntoValue, RString, TryConvert,
-    Value,
+    exception::runtime_error, typed_data::Obj, ExceptionClass, IntoValue, RArray, RString,
+    TryConvert, Value,
 };
-use std::{
-    os::fd::RawFd,
-};
-
+use std::os::fd::RawFd;
 
 use crate::{
+    fiber::{Fiber, Suspended},
     timeout_duration::TimeoutDuration,
 };
 
@@ -98,7 +96,7 @@ pub trait Scheduler: Sized {
     // fn close(self);
 
     /// Schedules the given Proc to run in a separate non-blocking fiber.
-    fn fiber(&self, args: &[Value]) -> Result<Value, magnus::Error>;
+    fn fiber(&self, args: &[Value]) -> Result<Fiber<Suspended>, magnus::Error>;
 
     // /// Reads data from an IO object into a buffer at a specified offset.
     // fn io_pread(
@@ -192,13 +190,12 @@ pub trait Scheduler: Sized {
     // /// Waits for the specified process with the given flags.
     // fn process_wait(&self, pid: u32, flags: i32) -> Result<Value, i32>;
 
-    // /// Executes a given block within the specified duration, raising an
-    // /// exception if the block's execution time exceeds the duration.
-    // fn timeout_after<F: FnOnce() -> T, T>(
-    //     &self,
-    //     duration: TimeoutDuration,
-    //     exception_class: Value,
-    //     exception_arguments: RArray,
-    //     block: F,
-    // ) -> Result<T, magnus::Error>;
+    /// Executes a given block within the specified duration, raising an
+    /// exception if the block's execution time exceeds the duration.
+    fn timeout_after(
+        &self,
+        duration: TimeoutDuration,
+        exception_class: ExceptionClass,
+        exception_arguments: RArray,
+    ) -> Result<Value, magnus::Error>;
 }
