@@ -55,23 +55,25 @@ impl FiberFuture {
 impl Future for FiberFuture {
     type Output = ResumableFiber;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let fut = &mut self.future;
-        tokio::pin!(fut);
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Unsafe block is needed because the FiberFuture object is pinned, and
+        // we need to move `future` and `fiber` out.  We're guaranteeing here
+        // that we won't move out the value unless it's ready to produce an
+        // output.
+        let FiberFuture { future, fiber } = unsafe { self.get_unchecked_mut() };
+        let future = unsafe { Pin::new_unchecked(future) };
 
-        match fut.poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => match result {
-                Ok(value) => {
-                    trace!(result = ?value, "future ready to resume in fiber");
-                    let resumable = ResumableFiber::new(self.fiber, Ok(value));
-                    Poll::Ready(resumable)
-                }
-                Err(e) => {
-                    let resumable = ResumableFiber::new(self.fiber, Err(e));
-                    Poll::Ready(resumable)
-                }
-            },
+        match Future::poll(future, cx) {
+            Poll::Ready(result) => {
+                trace!(?result, "Ruby future ready");
+                let resumable = ResumableFiber::new(*fiber, result);
+                Poll::Ready(resumable)
+            }
+            Poll::Pending => {
+                trace!("Ruby future not ready");
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
         }
     }
 }
