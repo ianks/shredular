@@ -8,6 +8,10 @@ pub struct TimeoutDuration(tokio::time::Duration);
 const FAR_FUTURE: Duration = Duration::from_secs(86400 * 365 * 30);
 
 impl TimeoutDuration {
+    pub fn from_secs(secs: u64) -> Self {
+        Self(Duration::from_secs(secs))
+    }
+
     pub fn into_std(self) -> std::time::Duration {
         self.0
     }

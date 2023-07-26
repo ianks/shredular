@@ -239,7 +239,7 @@ impl<S: State> Fiber<S> {
 
     /// Transmute this fiber to be in an "unchecked" state, so it can be used
     /// without presumption.
-    pub fn as_unchecked(&self) -> Fiber<Unknown> {
+    pub fn as_unknown(&self) -> Fiber<Unknown> {
         Fiber(self.0, PhantomData::<Unknown>)
     }
 

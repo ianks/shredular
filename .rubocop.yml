@@ -14,10 +14,17 @@ Style/StringLiteralsInInterpolation:
 Metrics/MethodLength:
   Exclude:
     - 'test/**/*'
+    - 'spec/**/*'
+
+Metrics/BlockLength:
+  Exclude:
+    - 'test/**/*'
+    - 'spec/**/*'
 
 Metrics/AbcSize:
   Exclude:
     - 'test/**/*'
+    - 'spec/**/*'
 
 Layout/LineLength:
   Max: 120

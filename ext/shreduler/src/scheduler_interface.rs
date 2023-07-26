@@ -1,6 +1,6 @@
 use magnus::{
-    exception::runtime_error, typed_data::Obj, ExceptionClass, IntoValue, RArray, RString,
-    TryConvert, Value,
+    block::Proc, exception::runtime_error, scan_args, typed_data::Obj, Error, ExceptionClass,
+    IntoValue, RArray, RString, TryConvert, Value,
 };
 use std::os::fd::RawFd;
 
@@ -71,32 +71,48 @@ impl From<IoInterests> for tokio::io::Interest {
 ///   has registered on hook calls) and resuming them when the awaited resource is
 ///   ready (e.g. I/O ready or sleep time elapsed).
 pub trait Scheduler: Sized {
+    /// Runs the scheduler until all fibers are completed.
+    fn run(&self) -> Result<(), magnus::Error>;
+
     /// Resolves a hostname to a list of IP addresses, returning `None` if the
     /// hostname cannot be resolved.
     ///
     /// Returns a Future that resolves to a list of IP addresses.
     fn address_resolve(&self, hostname: RString) -> Result<Value, magnus::Error>;
 
-    // /// Invoked by methods like Thread.join, and by Mutex, to signify that
-    // /// current Fiber is blocked until further notice (e.g. unblock) or until
-    // /// timeout has elapsed.
-    // ///
-    // /// - `blocker` is what we are waiting on, informational only (for debugging and
-    // ///   logging). There are no guarantee about its value.
-    // ///
-    // /// - Expected to return boolean, specifying whether the blocking operation was successful or not.
-    // fn block(
-    //     &self,
-    //     blocker: Value,
-    //     timeout: Option<TimeoutDuration>,
-    // ) -> Pin<Box<dyn Future<Output = Result<bool, magnus::Error>>>>;
+    /// Invoked by methods like Thread.join, and by Mutex, to signify that
+    /// current Fiber is blocked until further notice (e.g. unblock) or until
+    /// timeout has elapsed.
+    ///
+    /// - `blocker` is what we are waiting on, informational only (for debugging and
+    ///   logging). There are no guarantee about its value.
+    ///
+    /// - Expected to return boolean, specifying whether the blocking operation was successful or not.
+    fn block(
+        &self,
+        blocker: Value,
+        timeout: Option<TimeoutDuration>,
+    ) -> Result<bool, magnus::Error>;
+
+    /// Invoked to wake up Fiber previously blocked with block (for example,
+    /// Mutex#lock calls block and Mutex#unlock calls unblock). The scheduler should
+    /// use the fiber parameter to understand which fiber is unblocked.
+    ///
+    /// blocker is what was awaited for, but it is informational only (for debugging
+    /// and logging), and it is not guaranteed to be the same value as the blocker
+    /// for block
+    fn unblock(&self, blocker: Value, fiber_to_wake: Value) -> Result<(), magnus::Error>;
 
     // /// Called when the current thread exits, allowing the scheduler to finalize
     // /// waiting fibers.
     // fn close(self);
 
     /// Schedules the given Proc to run in a separate non-blocking fiber.
-    fn fiber(&self, args: &[Value]) -> Result<Fiber<Suspended>, magnus::Error>;
+    fn fiber(&self, args: &[Value]) -> Result<Fiber<Suspended>, Error> {
+        let args = scan_args::scan_args::<(), (), (), (), (), Proc>(args)?;
+        let block: Proc = args.block;
+        Fiber::<Suspended>::spawn_nonblocking(block)
+    }
 
     // /// Reads data from an IO object into a buffer at a specified offset.
     // fn io_pread(
@@ -187,8 +203,8 @@ pub trait Scheduler: Sized {
     /// The suggested pattern is to implement the main event loop in the close method.
     fn close(rb_self: Obj<Self>) -> Result<(), magnus::Error>;
 
-    // /// Waits for the specified process with the given flags.
-    // fn process_wait(&self, pid: u32, flags: i32) -> Result<Value, i32>;
+    /// Waits for the specified process with the given flags.
+    fn process_wait(&self, pid: u32, flags: i32) -> Result<Value, magnus::Error>;
 
     /// Executes a given block within the specified duration, raising an
     /// exception if the block's execution time exceeds the duration.
@@ -196,6 +212,55 @@ pub trait Scheduler: Sized {
         &self,
         duration: TimeoutDuration,
         exception_class: ExceptionClass,
-        exception_arguments: RArray,
+        message: RString,
     ) -> Result<Value, magnus::Error>;
+}
+
+#[macro_export]
+macro_rules! define_scheduler_methods {
+    ($klass:ident) => {{
+        use magnus::{method, Module};
+
+        let c = $klass::class();
+
+        c.define_singleton_method("new", function!($klass::new, 0))?;
+        c.define_method("address_resolve", method!($klass::address_resolve, 1))?;
+        c.define_method("io_wait", method!($klass::io_wait, 3))?;
+        c.define_method("kernel_sleep", method!($klass::kernel_sleep, 1))?;
+        c.define_method("close", method!($klass::close, 0))?;
+        c.define_method("fiber", method!($klass::fiber, -1))?;
+        c.define_method("timeout_after", method!($klass::timeout_after, 3))?;
+        c.define_method("process_wait", method!($klass::process_wait, 2))?;
+        c.define_method("block", method!($klass::block, 2))?;
+        c.define_method("unblock", method!($klass::unblock, 2))?;
+        c.define_method("run", method!($klass::run, 0))?;
+    }};
+}
+
+#[macro_export]
+macro_rules! impl_typed_data_for_scheduler {
+    ($ident:ident) => {
+        // TODO: remove this by implementing a proper `Send` trait for `TaskList`
+        unsafe impl Send for $ident {}
+        unsafe impl Sync for $ident {}
+
+        unsafe impl TypedData for $ident {
+            fn class() -> RClass {
+                *memoize!(RClass: {
+                  let c = magnus::define_class(stringify!($ident), Default::default()).unwrap();
+                  c.undef_alloc_func();
+                  c
+                })
+            }
+
+            fn data_type() -> &'static DataType {
+                memoize!(DataType: {
+                  let mut builder = DataTypeBuilder::<Self>::new(stringify!($ident));
+                  builder.mark();
+                  builder.free_immediately();
+                  builder.build()
+                })
+            }
+        }
+    };
 }
