@@ -1,5 +1,3 @@
-use magnus::QNIL;
-
 use super::prelude::*;
 
 impl TokioScheduler {
@@ -8,14 +6,13 @@ impl TokioScheduler {
     pub fn kernel_sleep(
         &self,
         duration: crate::timeout_duration::TimeoutDuration,
-    ) -> Result<(), Error> {
+    ) -> Result<Value, Error> {
         let future = async move {
             let dur = duration.into_std();
             tokio::time::sleep(dur).await;
-            Ok(*QNIL)
+            Ok(dur.as_secs().into_value())
         };
 
-        self.spawn_and_transfer(future)?;
-        Ok(())
+        self.spawn_and_transfer(future)
     }
 }

@@ -10,7 +10,7 @@ type Result<T> = std::result::Result<T, magnus::Error>;
 /// `GcCell` is a mutable memory location that enforces borrow rules at runtime
 /// and allows safely sharing mutable data between threads when the garbage
 /// collector is running.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct GcCell<T> {
     value: UnsafeCell<T>,
     read_count: AtomicI32,
@@ -120,6 +120,27 @@ impl<T> Drop for GcRef<'_, T> {
 impl<T> Drop for GcRefMut<'_, T> {
     fn drop(&mut self) {
         self.gc_cell.write_count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GcCell<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = unsafe { &*self.value.get() };
+        write!(f, "GcCell({:?})", value)
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GcRefMut<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = unsafe { &*self.gc_cell.value.get() };
+        write!(f, "GcRefMut({:?})", value)
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GcRef<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = unsafe { &*self.gc_cell.value.get() };
+        write!(f, "GcRef({:?})", value)
     }
 }
 
