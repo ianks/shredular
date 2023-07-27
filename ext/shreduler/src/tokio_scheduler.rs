@@ -1,6 +1,5 @@
 use futures::Future;
 use magnus::typed_data::Obj;
-use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::fmt::Formatter;
 use std::mem::transmute;
@@ -21,15 +20,16 @@ use tracing::{debug, error, info, trace};
 
 use crate::fiber::{Fiber, Suspended, Unknown};
 use crate::fiber_future::{FiberFuture, ResumableFiber};
+use crate::gc_cell::GcCell;
 use crate::scheduler_interface::Scheduler;
 use crate::timeout_duration::TimeoutDuration;
 use crate::{define_scheduler_methods, impl_typed_data_for_scheduler};
 
 pub struct TokioScheduler {
     root_fiber: Fiber<Unknown>,
-    futures_to_run: UnsafeCell<JoinSet<ResumableFiber>>,
+    futures_to_run: GcCell<JoinSet<ResumableFiber>>,
     runtime: Option<Runtime>,
-    blockers: RefCell<HashMap<Fiber<Suspended>, Sender<Value>>>,
+    blockers: GcCell<HashMap<Fiber<Suspended>, Sender<Value>>>,
     _enter_guard: Option<EnterGuard<'static>>, // needed for time::sleep
 }
 
@@ -37,7 +37,7 @@ impl std::fmt::Debug for TokioScheduler {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokioScheduler")
             .field("root_fiber", &self.root_fiber)
-            .field("futures_to_run", &self.futures_to_run_mut())
+            .field("futures_to_run", &self.futures_to_run)
             .field("runtime", &"...")
             .field("_enter_guard", &"...")
             .field("blockers", &self.blockers)
@@ -48,11 +48,10 @@ impl std::fmt::Debug for TokioScheduler {
 impl DataTypeFunctions for TokioScheduler {
     fn mark(&self) {
         gc::mark(self.root_fiber);
-        // let futures_to_run = unsafe { &*self.futures_to_run.get() };
 
-        // for (fiber, _) in futures_to_run {
-        //     gc::mark(*fiber);
-        // }
+        for fiber in self.blockers.borrow_for_gc().keys() {
+            gc::mark(*fiber);
+        }
     }
 }
 
@@ -99,7 +98,7 @@ impl Scheduler for TokioScheduler {
     #[tracing::instrument]
     fn run(&self) -> Result<(), Error> {
         self.runtime()?.block_on(async move {
-            while let Some(task) = self.futures_to_run_mut().join_next().await {
+            while let Some(task) = self.futures_to_run.try_borrow_mut()?.join_next().await {
                 match task {
                     Ok(fiber) => {
                         match fiber.resume() {
@@ -157,19 +156,22 @@ impl Scheduler for TokioScheduler {
         self.spawn_and_transfer(future)
     }
 
+    #[tracing::instrument]
     fn block(
         rb_self: Obj<Self>,
         _blocker: Value,
         timeout: Option<crate::timeout_duration::TimeoutDuration>,
     ) -> Result<Value, Error> {
-        let (tx, rx) = oneshot::channel();
-        let fiber = unsafe { Fiber::current().as_suspended() };
-        let scheduler = rb_self.get();
-        scheduler.blockers.borrow_mut().insert(fiber, tx);
+        let rx = {
+            let (tx, rx) = oneshot::channel();
+            let fiber = unsafe { Fiber::current().as_suspended() };
+            rb_self.get().blockers.try_borrow_mut()?.insert(fiber, tx);
+            rx
+        };
 
         let future = async move {
             let scheduler = rb_self.get();
-            let result = Self::with_timeout(timeout, async move {
+            let result = with_timeout(timeout, async move {
                 let result = rx
                     .await
                     .map_err(|_| Error::new(base_error(), "could not unblock fiber"))?;
@@ -178,25 +180,25 @@ impl Scheduler for TokioScheduler {
             .await;
 
             let fiber = unsafe { Fiber::current().as_suspended() };
-            scheduler.blockers.borrow_mut().remove(&fiber);
+            scheduler.blockers.try_borrow_mut()?.remove(&fiber);
             result
         };
 
-        scheduler.spawn_and_transfer(future)
+        rb_self.get().spawn_and_transfer(future)
     }
 
     #[tracing::instrument]
     fn unblock(&self, blocker: Value, fiber_to_wake: Value) -> Result<(), Error> {
-        if let Ok(fiber) = Fiber::<Suspended>::from_value(fiber_to_wake) {
-            let fiber = fiber.check_suspended()?;
-            let mut blockers = self.blockers.borrow_mut();
+        let fiber = Fiber::<Suspended>::from_value(fiber_to_wake)?.check_suspended()?;
 
-            if let Some(tx) = blockers.remove(&fiber) {
-                drop(blockers);
+        self.blockers
+            .try_borrow_mut()?
+            .remove(&fiber)
+            .and_then(|tx| {
                 tx.send(true.into())
-                    .map_err(|_| Error::new(base_error(), "could not unblock fiber"))?;
-            }
-        }
+                    .map_err(|_| Error::new(base_error(), "could not unblock fiber"))
+                    .ok()
+            });
 
         Ok(())
     }
@@ -255,33 +257,30 @@ impl TokioScheduler {
             .ok_or_else(|| Error::new(base_error(), "scheduler is closed".to_owned()))
     }
 
-    #[allow(clippy::mut_from_ref)]
-    fn futures_to_run_mut(&self) -> &mut JoinSet<ResumableFiber> {
-        unsafe { &mut *self.futures_to_run.get() }
-    }
-
     fn spawn_and_transfer(
         &self,
         future: impl Future<Output = Result<Value, Error>> + 'static,
     ) -> Result<Value, Error> {
-        let fiber_future = FiberFuture::new(future);
-        self.futures_to_run_mut().spawn(fiber_future);
+        {
+            let fiber_future = FiberFuture::new(future);
+            self.futures_to_run.try_borrow_mut()?.spawn(fiber_future);
+        }
         self.root_fiber.check_suspended()?.transfer(())
     }
+}
 
-    async fn with_timeout(
-        timeout: Option<TimeoutDuration>,
-        f: impl Future<Output = Result<Value, Error>>,
-    ) -> Result<Value, Error> {
-        if let Some(timeout) = timeout {
-            let dur = timeout.into_std();
-            match tokio::time::timeout(dur, f).await {
-                Ok(result) => result,
-                Err(_) => Err(Error::new(base_error(), format!("Timeout after {:?}", dur))),
-            }
-        } else {
-            f.await
+async fn with_timeout(
+    timeout: Option<TimeoutDuration>,
+    f: impl Future<Output = Result<Value, Error>>,
+) -> Result<Value, Error> {
+    if let Some(timeout) = timeout {
+        let dur = timeout.into_std();
+        match tokio::time::timeout(dur, f).await {
+            Ok(result) => result,
+            Err(_) => Err(Error::new(base_error(), format!("timeout after {:?}", dur))),
         }
+    } else {
+        f.await
     }
 }
 

@@ -1,5 +1,6 @@
 mod fiber;
 mod fiber_future;
+mod gc_cell;
 mod scheduler_interface;
 mod timeout_duration;
 mod tokio_scheduler;
