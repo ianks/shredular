@@ -125,8 +125,6 @@ impl<T> Drop for GcRefMut<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::panic::AssertUnwindSafe;
-
     use super::*;
     use rb_sys_test_helpers::ruby_test;
 
