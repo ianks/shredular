@@ -15,9 +15,14 @@ impl TokioScheduler {
     #[tracing::instrument]
     pub fn run(&self) -> Result<(), Error> {
         self.runtime()?.block_on(async move {
-            while let Some(task) = self.futures_to_run.try_borrow_mut()?.join_next().await {
+            loop {
+                let task = {
+                    let mut futures_to_run = self.futures_to_run.try_borrow_mut()?;
+                    futures_to_run.join_next().await
+                };
+
                 match task {
-                    Ok(fiber) => {
+                    Some(Ok(fiber)) => {
                         match fiber.resume() {
                             Ok(value) => {
                                 info!(?value, "Fiber completed successfully");
@@ -28,15 +33,15 @@ impl TokioScheduler {
                             }
                         };
                     }
-                    Err(error) => {
+                    Some(Err(error)) => {
                         error!(?error, "Could not join future");
+                    }
+                    _ => {
+                        info!("No more fibers to run");
+                        return Ok(());
                     }
                 };
             }
-
-            Ok(())
-        })?;
-
-        Ok(())
+        })
     }
 }

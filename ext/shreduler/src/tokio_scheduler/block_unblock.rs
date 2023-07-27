@@ -20,7 +20,9 @@ impl TokioScheduler {
         let rx = {
             let (tx, rx) = oneshot::channel();
             let fiber = unsafe { Fiber::current().as_suspended() };
-            rb_self.get().blockers.try_borrow_mut()?.insert(fiber, tx);
+            {
+                rb_self.get().blockers.try_borrow_mut()?.insert(fiber, tx);
+            }
             rx
         };
 
@@ -35,7 +37,9 @@ impl TokioScheduler {
             .await;
 
             let fiber = unsafe { Fiber::current().as_suspended() };
-            scheduler.blockers.try_borrow_mut()?.remove(&fiber);
+            {
+                scheduler.blockers.try_borrow_mut()?.remove(&fiber);
+            }
             result
         };
 
@@ -52,15 +56,15 @@ impl TokioScheduler {
     #[tracing::instrument]
     pub fn unblock(&self, blocker: Value, fiber_to_wake: Value) -> Result<(), Error> {
         let fiber = Fiber::<Suspended>::from_value(fiber_to_wake)?.check_suspended()?;
+        let removed = {
+            let mut blockers = self.blockers.try_borrow_mut()?;
+            blockers.remove(&fiber)
+        };
 
-        self.blockers
-            .try_borrow_mut()?
-            .remove(&fiber)
-            .and_then(|tx| {
-                tx.send(true.into())
-                    .map_err(|_| Error::new(base_error(), "could not unblock fiber"))
-                    .ok()
-            });
+        if let Some(tx) = removed {
+            tx.send(true.into())
+                .map_err(|_| Error::new(base_error(), "could not unblock fiber"))?;
+        }
 
         Ok(())
     }
