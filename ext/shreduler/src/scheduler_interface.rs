@@ -1,6 +1,6 @@
 use magnus::{
     block::Proc, exception::runtime_error, scan_args, typed_data::Obj, Error, ExceptionClass,
-    IntoValue, RArray, RString, TryConvert, Value,
+    IntoValue, RString, TryConvert, Value,
 };
 use std::os::fd::RawFd;
 
@@ -89,10 +89,10 @@ pub trait Scheduler: Sized {
     ///
     /// - Expected to return boolean, specifying whether the blocking operation was successful or not.
     fn block(
-        &self,
+        rb_self: Obj<Self>,
         blocker: Value,
         timeout: Option<TimeoutDuration>,
-    ) -> Result<bool, magnus::Error>;
+    ) -> Result<Value, magnus::Error>;
 
     /// Invoked to wake up Fiber previously blocked with block (for example,
     /// Mutex#lock calls block and Mutex#unlock calls unblock). The scheduler should
@@ -194,7 +194,7 @@ pub trait Scheduler: Sized {
     // fn io_write(&self, io: RawFd, buffer: &[u8], length: usize) -> Result<usize, i32>;
 
     /// Puts the current fiber to sleep for the specified duration.
-    fn kernel_sleep(&self, duration: TimeoutDuration) -> Result<Value, magnus::Error>;
+    fn kernel_sleep(&self, duration: TimeoutDuration) -> Result<(), magnus::Error>;
 
     /// Called when the current thread exits. The scheduler is expected to
     /// implement this method in order to allow all waiting fibers to finalize

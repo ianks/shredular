@@ -19,6 +19,14 @@ namespace :test do
     ENV["SCHEDULER_IMPLEMENTATION"] = "async"
     sh("bundle exec rake test")
   end
+
+  %i[trace debug info warn error fatal].each do |level|
+    desc "Run tests with #{level} log level"
+    task level do
+      ENV["RUST_LOG"] = "shreduler=#{level}"
+      sh("bundle exec rake")
+    end
+  end
 end
 
 task default: %i[compile test]

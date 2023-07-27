@@ -2,16 +2,12 @@ use magnus::{rb_sys::AsRawValue, TryConvert, Value};
 use std::time::Duration;
 
 /// Represents the amount of time to wait before timing out (in seconds to match Ruby semantics).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TimeoutDuration(tokio::time::Duration);
 
 const FAR_FUTURE: Duration = Duration::from_secs(86400 * 365 * 30);
 
 impl TimeoutDuration {
-    pub fn from_secs(secs: u64) -> Self {
-        Self(Duration::from_secs(secs))
-    }
-
     pub fn into_std(self) -> std::time::Duration {
         self.0
     }

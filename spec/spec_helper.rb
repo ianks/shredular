@@ -10,10 +10,29 @@ SCHEDULER_IMPLEMENTATION = case ENV.fetch("SCHEDULER_IMPLEMENTATION", nil)
                              Async::Scheduler
                            else
                              require "shreduler"
-                             Shreduler
+                             TokioScheduler
                            end
 
+module TestHelpers
+  module_function
+
+  def in_fibered_env
+    result = Thread.new do
+      scheduler = SCHEDULER_IMPLEMENTATION.new
+      Fiber.set_scheduler(scheduler)
+      ret = yield
+      scheduler.run
+      ret
+    end.join(1)
+
+    raise "Fibered environment timed out" unless result.is_a?(Thread)
+
+    result
+  end
+end
+
 RSpec.configure do |config|
+  config.include(TestHelpers)
   # rspec-expectations config goes here. You can use an alternate
   # assertion/expectation library such as wrong or the stdlib/minitest
   # assertions if you prefer.
@@ -46,7 +65,7 @@ RSpec.configure do |config|
   config.filter_run_when_matching :focus
   config.disable_monkey_patching!
   config.warnings = true
-  config.default_formatter = "doc" if config.files_to_run.one?
+  config.default_formatter = "doc"
   config.order = :random
   config.backtrace_inclusion_patterns << /fiber/
   Kernel.srand config.seed

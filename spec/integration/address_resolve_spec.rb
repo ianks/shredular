@@ -1,15 +1,11 @@
+# frozen_string_literal: true
+
 require "spec_helper"
 require "resolv"
 
 RSpec.describe SCHEDULER_IMPLEMENTATION do
   around do |example|
-    result = Thread.new do
-      scheduler = described_class.new
-      Fiber.set_scheduler(scheduler)
-      example.run
-    end.join(1)
-
-    expect(result).to be_a Thread # failure means spec timed out
+    TestHelpers.in_fibered_env { example.run }
   end
 
   cases = [
@@ -22,7 +18,7 @@ RSpec.describe SCHEDULER_IMPLEMENTATION do
   ].freeze
 
   cases.each do |host|
-    fit "can resolve #{host}" do
+    it "can resolve #{host}" do
       called = false
 
       Fiber.schedule do

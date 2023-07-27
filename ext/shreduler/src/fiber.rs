@@ -36,9 +36,15 @@ mod state {
     impl State for Unknown {}
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Fiber<S: state::State>(Value, PhantomData<S>);
+
+impl<S: State> std::fmt::Debug for Fiber<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Fiber").field(&self.0).finish()
+    }
+}
 
 impl Fiber<Running> {
     /// The currently active Ruby fiber.
@@ -192,13 +198,6 @@ impl Fiber<Unknown> {
 }
 
 impl<S: State> Fiber<S> {
-    /// Creates a new fiber from a block.
-    pub fn new(block: Proc) -> Result<Fiber<Suspended>, Error> {
-        let fiber = fiber_class().funcall_with_block("new", (), block)?;
-
-        Ok(Fiber(fiber, PhantomData::<Suspended>))
-    }
-
     pub fn new_nonblocking(block: Proc) -> Result<Fiber<Suspended>, Error> {
         let kwargs = RHash::new();
         kwargs.aset(Symbol::new("blocking"), false)?;

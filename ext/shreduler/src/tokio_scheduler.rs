@@ -1,9 +1,15 @@
-use futures::{Future, TryFutureExt};
-use std::cell::UnsafeCell;
-use std::collections::{HashMap, VecDeque};
+use futures::Future;
+use magnus::typed_data::Obj;
+use std::cell::{RefCell, UnsafeCell};
+use std::collections::HashMap;
+use std::fmt::Formatter;
 use std::mem::transmute;
-use std::pin::Pin;
-use tokio::task::{JoinHandle, JoinSet};
+
+use tokio::sync::oneshot::{self, Sender};
+use tokio::task::JoinSet;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Registry};
+use tracing_tree::HierarchicalLayer;
 
 use magnus::{
     exception::standard_error, gc, typed_data::DataTypeBuilder, DataTypeFunctions, Error,
@@ -11,20 +17,32 @@ use magnus::{
 };
 use magnus::{prelude::*, DataType, IntoValue, RArray, Value, QNIL};
 use tokio::runtime::{EnterGuard, Runtime};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
-use crate::fiber::{Fiber, Unknown};
+use crate::fiber::{Fiber, Suspended, Unknown};
 use crate::fiber_future::{FiberFuture, ResumableFiber};
 use crate::scheduler_interface::Scheduler;
 use crate::timeout_duration::TimeoutDuration;
-use crate::{define_scheduler_methods, fiber_future, impl_typed_data_for_scheduler};
+use crate::{define_scheduler_methods, impl_typed_data_for_scheduler};
 
-#[derive(Debug)]
 pub struct TokioScheduler {
     root_fiber: Fiber<Unknown>,
     futures_to_run: UnsafeCell<JoinSet<ResumableFiber>>,
     runtime: Option<Runtime>,
-    enter_guard: Option<EnterGuard<'static>>,
+    blockers: RefCell<HashMap<Fiber<Suspended>, Sender<Value>>>,
+    _enter_guard: Option<EnterGuard<'static>>, // needed for time::sleep
+}
+
+impl std::fmt::Debug for TokioScheduler {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokioScheduler")
+            .field("root_fiber", &self.root_fiber)
+            .field("futures_to_run", &self.futures_to_run_mut())
+            .field("runtime", &"...")
+            .field("_enter_guard", &"...")
+            .field("blockers", &self.blockers)
+            .finish()
+    }
 }
 
 impl DataTypeFunctions for TokioScheduler {
@@ -53,16 +71,17 @@ impl TokioScheduler {
             .build()
             .map_err(|e| Error::new(base_error(), format!("{e}")))?;
 
-        let enter_guard = runtime.enter();
         // SAFETY: the lifetime of the guard is tied to the lifetime of this
         // scheduler and Ruby object, so we consider it static.
+        let enter_guard = runtime.enter();
         let enter_guard = unsafe { transmute::<_, EnterGuard<'static>>(enter_guard) };
 
         Ok(Self {
             root_fiber: Fiber::current().as_unknown(),
             futures_to_run: Default::default(),
             runtime: Some(runtime),
-            enter_guard: Some(enter_guard),
+            blockers: Default::default(),
+            _enter_guard: Some(enter_guard),
         })
     }
 }
@@ -77,23 +96,24 @@ macro_rules! rtodo {
 }
 
 impl Scheduler for TokioScheduler {
+    #[tracing::instrument]
     fn run(&self) -> Result<(), Error> {
-        debug!("running Tokio scheduler");
-
         self.runtime()?.block_on(async move {
             while let Some(task) = self.futures_to_run_mut().join_next().await {
                 match task {
                     Ok(fiber) => {
                         match fiber.resume() {
-                            Ok(_) => {}
-                            Err(e) => {
-                                error!(?e, "error resuming fiber");
-                                return Err(e);
+                            Ok(value) => {
+                                info!(?value, "Fiber completed successfully");
+                            }
+                            Err(error) => {
+                                error!(?error, "Error resuming fiber");
+                                return Err(error);
                             }
                         };
                     }
-                    Err(e) => {
-                        error!(?e, "could not join future");
+                    Err(error) => {
+                        error!(?error, "Could not join future");
                     }
                 };
             }
@@ -104,17 +124,17 @@ impl Scheduler for TokioScheduler {
         Ok(())
     }
 
+    #[tracing::instrument]
     fn address_resolve(&self, hostname: magnus::RString) -> Result<Value, Error> {
         let future = async move {
-            debug!("resolving address");
             // See https://github.com/socketry/async/issues/180 for more details.
             let hostname = unsafe { hostname.as_str() }?;
             let hostname = hostname.split('%').next().unwrap_or(hostname);
             let mut split = hostname.splitn(2, ':');
 
             let Some(host) = split.next() else {
-                        return Ok(RArray::new().into_value());
-                    };
+                return Ok(RArray::new().into_value());
+            };
 
             if let Some(_port) = split.next() {
                 // Match the behavior of MRI, which returns an empty array if the port is given
@@ -134,25 +154,63 @@ impl Scheduler for TokioScheduler {
             Ok(*addresses)
         };
 
-        let timeout = Some(TimeoutDuration::from_secs(5));
-        let future = with_timeout(timeout, future);
-        let fiber_future = FiberFuture::new(future);
-        self.futures_to_run_mut().spawn(fiber_future);
-        self.root_fiber.check_suspended()?.transfer(())
+        self.spawn_and_transfer(future)
     }
 
+    /// Invoked by methods like Thread.join, and by Mutex, to signify that
+    /// current Fiber is blocked until further notice (e.g. unblock) or until
+    /// timeout has elapsed.
+    ///
+    /// - `blocker` is what we are waiting on, informational only (for debugging and
+    ///   logging). There are no guarantee about its value.
+    ///
+    /// - Expected to return boolean, specifying whether the blocking operation was successful or not.   #[tracing::instrument]
     fn block(
-        &self,
-        blocker: Value,
+        rb_self: Obj<Self>,
+        _blocker: Value,
         timeout: Option<crate::timeout_duration::TimeoutDuration>,
-    ) -> Result<bool, Error> {
-        rtodo!("block")
+    ) -> Result<Value, Error> {
+        let (tx, rx) = oneshot::channel();
+        let fiber = unsafe { Fiber::current().as_suspended() };
+        let scheduler = rb_self.get();
+
+        scheduler.blockers.borrow_mut().insert(fiber, tx);
+
+        let future = async move {
+            let scheduler = rb_self.get();
+            let result = Self::with_timeout(timeout, async move {
+                let result = rx
+                    .await
+                    .map_err(|_| Error::new(base_error(), "could not unblock fiber"))?;
+                Ok(result)
+            })
+            .await;
+
+            let fiber = unsafe { Fiber::current().as_suspended() };
+            scheduler.blockers.borrow_mut().remove(&fiber);
+            result
+        };
+
+        scheduler.spawn_and_transfer(future)
     }
 
+    #[tracing::instrument]
     fn unblock(&self, blocker: Value, fiber_to_wake: Value) -> Result<(), Error> {
-        rtodo!("unblock")
+        if let Ok(fiber) = Fiber::<Suspended>::from_value(fiber_to_wake) {
+            let fiber = fiber.check_suspended()?;
+            let mut blockers = self.blockers.borrow_mut();
+
+            if let Some(tx) = blockers.remove(&fiber) {
+                drop(blockers);
+                tx.send(true.into())
+                    .map_err(|_| Error::new(base_error(), "could not unblock fiber"))?;
+            }
+        }
+
+        Ok(())
     }
 
+    #[tracing::instrument]
     fn io_wait(
         &self,
         io: std::os::fd::RawFd,
@@ -162,22 +220,33 @@ impl Scheduler for TokioScheduler {
         rtodo!("io_wait")
     }
 
+    #[tracing::instrument]
     fn kernel_sleep(
         &self,
         duration: crate::timeout_duration::TimeoutDuration,
-    ) -> Result<Value, Error> {
-        rtodo!("kernel_sleep")
+    ) -> Result<(), Error> {
+        let future = async move {
+            let dur = duration.into_std();
+            tokio::time::sleep(dur).await;
+            Ok(*QNIL)
+        };
+
+        self.spawn_and_transfer(future)?;
+        Ok(())
     }
 
+    #[tracing::instrument]
     fn close(rb_self: magnus::typed_data::Obj<Self>) -> Result<(), Error> {
         trace!("calling close");
         Ok(())
     }
 
+    #[tracing::instrument]
     fn process_wait(&self, pid: u32, flags: i32) -> Result<Value, Error> {
         rtodo!("process_wait")
     }
 
+    #[tracing::instrument]
     fn timeout_after(
         &self,
         duration: crate::timeout_duration::TimeoutDuration,
@@ -185,20 +254,6 @@ impl Scheduler for TokioScheduler {
         message: magnus::RString,
     ) -> Result<Value, Error> {
         rtodo!("timeout_after")
-    }
-}
-async fn with_timeout(
-    timeout: Option<TimeoutDuration>,
-    f: impl Future<Output = Result<Value, Error>>,
-) -> Result<Value, Error> {
-    if let Some(timeout) = timeout {
-        let dur = timeout.into_std();
-        match tokio::time::timeout(dur, f).await {
-            Ok(result) => result,
-            Err(_) => Err(Error::new(base_error(), format!("Timeout after {:?}", dur))),
-        }
-    } else {
-        f.await
     }
 }
 
@@ -213,6 +268,30 @@ impl TokioScheduler {
     fn futures_to_run_mut(&self) -> &mut JoinSet<ResumableFiber> {
         unsafe { &mut *self.futures_to_run.get() }
     }
+
+    fn spawn_and_transfer(
+        &self,
+        future: impl Future<Output = Result<Value, Error>> + 'static,
+    ) -> Result<Value, Error> {
+        let fiber_future = FiberFuture::new(future);
+        self.futures_to_run_mut().spawn(fiber_future);
+        self.root_fiber.check_suspended()?.transfer(())
+    }
+
+    async fn with_timeout(
+        timeout: Option<TimeoutDuration>,
+        f: impl Future<Output = Result<Value, Error>>,
+    ) -> Result<Value, Error> {
+        if let Some(timeout) = timeout {
+            let dur = timeout.into_std();
+            match tokio::time::timeout(dur, f).await {
+                Ok(result) => result,
+                Err(_) => Err(Error::new(base_error(), format!("Timeout after {:?}", dur))),
+            }
+        } else {
+            f.await
+        }
+    }
 }
 
 pub fn base_error() -> ExceptionClass {
@@ -224,7 +303,14 @@ pub fn base_error() -> ExceptionClass {
 }
 
 pub fn init() -> Result<(), Error> {
-    tracing_subscriber::fmt::init();
+    Registry::default()
+        .with(EnvFilter::from_default_env())
+        .with(
+            HierarchicalLayer::new(2)
+                .with_targets(true)
+                .with_bracketed_fields(true),
+        )
+        .init();
     impl_typed_data_for_scheduler!(TokioScheduler);
     define_scheduler_methods!(TokioScheduler);
 
