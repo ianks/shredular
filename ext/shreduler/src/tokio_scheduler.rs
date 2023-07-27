@@ -15,7 +15,7 @@ use magnus::{
     exception::standard_error, gc, typed_data::DataTypeBuilder, DataTypeFunctions, Error,
     ExceptionClass, RClass, TypedData,
 };
-use magnus::{prelude::*, DataType, IntoValue, RArray, Value, QNIL};
+use magnus::{prelude::*, DataType, IntoValue, RArray, RString, Value, QNIL};
 use tokio::runtime::{EnterGuard, Runtime};
 use tracing::{debug, error, info, trace};
 
@@ -125,19 +125,20 @@ impl Scheduler for TokioScheduler {
     }
 
     #[tracing::instrument]
-    fn address_resolve(&self, hostname: magnus::RString) -> Result<Value, Error> {
+    fn address_resolve(&self, hostname: RString) -> Result<Value, Error> {
+        let hostname = hostname.to_string()?;
+
         let future = async move {
             // See https://github.com/socketry/async/issues/180 for more details.
-            let hostname = unsafe { hostname.as_str() }?;
-            let hostname = hostname.split('%').next().unwrap_or(hostname);
+            let hostname = hostname.split('%').next().unwrap_or(&hostname);
             let mut split = hostname.splitn(2, ':');
 
             let Some(host) = split.next() else {
                 return Ok(RArray::new().into_value());
             };
 
-            if let Some(_port) = split.next() {
-                // Match the behavior of MRI, which returns an empty array if the port is given
+            // Match the behavior of MRI, which returns an empty array if the port is given
+            if split.next().is_some() {
                 return Ok(RArray::new().into_value());
             }
 
@@ -146,7 +147,6 @@ impl Scheduler for TokioScheduler {
             let addresses = RArray::new();
 
             for address in host_lookup? {
-                trace!(?address, "found address");
                 addresses.push(address.ip().to_string())?;
             }
 
@@ -157,14 +157,6 @@ impl Scheduler for TokioScheduler {
         self.spawn_and_transfer(future)
     }
 
-    /// Invoked by methods like Thread.join, and by Mutex, to signify that
-    /// current Fiber is blocked until further notice (e.g. unblock) or until
-    /// timeout has elapsed.
-    ///
-    /// - `blocker` is what we are waiting on, informational only (for debugging and
-    ///   logging). There are no guarantee about its value.
-    ///
-    /// - Expected to return boolean, specifying whether the blocking operation was successful or not.   #[tracing::instrument]
     fn block(
         rb_self: Obj<Self>,
         _blocker: Value,
@@ -173,7 +165,6 @@ impl Scheduler for TokioScheduler {
         let (tx, rx) = oneshot::channel();
         let fiber = unsafe { Fiber::current().as_suspended() };
         let scheduler = rb_self.get();
-
         scheduler.blockers.borrow_mut().insert(fiber, tx);
 
         let future = async move {
