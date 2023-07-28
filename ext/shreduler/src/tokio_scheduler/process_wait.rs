@@ -17,6 +17,20 @@ use tracing::warn;
 
 use super::prelude::*;
 
+impl TokioScheduler {
+    /// Waits for the specified process with the given flags.
+    #[tracing::instrument]
+    pub fn process_wait(&self, pid: i32, flags: u32) -> Result<Value, Error> {
+        let future = async move {
+            let waiter = PidWaiter::new(pid, flags)?;
+
+            waiter.await
+        };
+
+        self.spawn_and_transfer(future)
+    }
+}
+
 pub struct PidWaiter {
     pid: i32,
     flags: u32,
@@ -186,19 +200,5 @@ impl Future for PidWaiter {
 impl IntoValue for ProcessStatus {
     fn into_value_with(self, _handle: &magnus::Ruby) -> Value {
         self.0.into_value()
-    }
-}
-
-impl TokioScheduler {
-    /// Waits for the specified process with the given flags.
-    #[tracing::instrument]
-    pub fn process_wait(&self, pid: i32, flags: u32) -> Result<Value, Error> {
-        let future = async move {
-            let waiter = PidWaiter::new(pid, flags)?;
-
-            waiter.await
-        };
-
-        self.spawn_and_transfer(future)
     }
 }
