@@ -11,6 +11,10 @@ impl TimeoutDuration {
     pub fn into_std(self) -> std::time::Duration {
         self.0
     }
+
+    pub fn is_zero(self) -> bool {
+        self.0 == Duration::from_secs(0)
+    }
 }
 
 impl TryConvert for TimeoutDuration {

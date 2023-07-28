@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use super::prelude::*;
 
 impl TokioScheduler {
@@ -8,6 +10,14 @@ impl TokioScheduler {
     /// The suggested pattern is to implement the main event loop in the close method.
     #[tracing::instrument]
     pub fn close(rb_self: Obj<Self>) -> Result<(), Error> {
+        let scheduler = rb_self.get();
+        scheduler.run()?;
+        let mut_runtime = unsafe { &mut *scheduler.runtime.get() };
+
+        if let Some(rt) = mut_runtime.take() {
+            rt.shutdown_timeout(Duration::from_secs(5));
+        }
+
         Ok(())
     }
 

@@ -1,9 +1,12 @@
-use std::os::fd::RawFd;
-
-use crate::rtodo;
-
 use super::prelude::*;
+use bitflags::bitflags;
+use magnus::value::Id;
 use magnus::{IntoValue, TryConvert};
+use rb_sys::rb_io_event_t::*;
+use std::convert::TryFrom;
+use std::os::fd::RawFd;
+use tokio::io::unix::AsyncFd;
+use tokio::io::Interest;
 
 use super::base_error;
 
@@ -23,51 +26,102 @@ impl TokioScheduler {
     #[tracing::instrument]
     pub fn io_wait(
         &self,
-        io: RawFd,
-        interests: IoInterests,
+        io: Value,
+        interests: RubyIoEvent,
         timeout: Option<TimeoutDuration>,
     ) -> Result<Value, magnus::Error> {
-        rtodo!("io_wait")
+        let fileno = *memoize!(Id: Id::new("fileno"));
+        let ruby_io: RawFd = io.funcall(fileno, ())?;
+        let interests = tokio::io::Interest::try_from(interests)?;
+
+        let future = async move {
+            let async_fd = AsyncFd::with_interest(ruby_io, interests).map_err(|e| {
+                magnus::Error::new(
+                    base_error(),
+                    format!("Could not create AsyncFd from RawFd: {}", e),
+                )
+            })?;
+            let _ = async_fd.ready(interests).await.map_err(|e| {
+                magnus::Error::new(base_error(), format!("Could not wait for readable: {}", e))
+            })?;
+
+            Ok(RubyIoEvent::READABLE.into_value())
+        };
+
+        let future = Self::with_timeout_no_raise(timeout, future);
+        self.spawn_and_transfer(future)
     }
 }
 
-bitflags::bitflags! {
+bitflags! {
   /// Bitflags struct for IO interests.
   #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-  pub struct IoInterests: u32 {
-      const Readable = 0b00000001;
-      const Writable = 0b00000010;
-      const ReadableWritable = Self::Readable.bits() | Self::Writable.bits();
+  pub struct RubyIoEvent: u32 {
+      const READABLE = RUBY_IO_READABLE as _;
+      const WRITABLE = RUBY_IO_WRITABLE as _;
+      const PRIORITY = RUBY_IO_PRIORITY as _;
   }
 
 }
 
-impl TryConvert for IoInterests {
+impl TryConvert for RubyIoEvent {
     fn try_convert(value: Value) -> Result<Self, magnus::Error> {
         let value: u32 = value.try_convert()?;
 
-        IoInterests::from_bits(value).ok_or_else(|| {
+        RubyIoEvent::from_bits(value).ok_or_else(|| {
             magnus::Error::new(base_error(), format!("Invalid IO interests: {}", value))
         })
     }
 }
 
-impl IntoValue for IoInterests {
+impl IntoValue for RubyIoEvent {
     fn into_value_with(self, handle: &magnus::Ruby) -> Value {
         *handle.integer_from_u64(self.bits() as u64)
     }
 }
 
-impl From<IoInterests> for tokio::io::Interest {
-    fn from(interests: IoInterests) -> Self {
-        if interests.contains(IoInterests::ReadableWritable) {
-            tokio::io::Interest::READABLE | tokio::io::Interest::WRITABLE
-        } else if interests.contains(IoInterests::Readable) {
-            tokio::io::Interest::READABLE
-        } else if interests.contains(IoInterests::Writable) {
-            tokio::io::Interest::WRITABLE
+impl TryFrom<RubyIoEvent> for Interest {
+    type Error = Error;
+
+    fn try_from(interests: RubyIoEvent) -> Result<Self, Self::Error> {
+        let result = if interests.contains(RubyIoEvent::READABLE) {
+            Interest::READABLE
         } else {
-            tokio::io::Interest::READABLE
+            Interest::WRITABLE
+        };
+
+        if interests.contains(RubyIoEvent::WRITABLE) {
+            result.add(Interest::WRITABLE);
+        }
+
+        if interests.contains(RubyIoEvent::PRIORITY) {
+            return Err(Error::new(
+                base_error(),
+                "Priority is not a valid interest for tokio::io::Interest",
+            ));
+        }
+
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rb_sys_test_helpers::ruby_test;
+
+    #[ruby_test]
+    fn test_conversions_from_ruby_io_interests() {
+        let readable: RubyIoEvent = eval!("IO::READABLE").unwrap();
+        assert_eq!(tokio::io::Interest::READABLE, readable.try_into().unwrap());
+
+        let writable: RubyIoEvent = eval!("IO::WRITABLE").unwrap();
+        assert_eq!(tokio::io::Interest::WRITABLE, writable.try_into().unwrap());
+
+        #[cfg(target_os = "linux")]
+        {
+            let priority: RubyIoInterests = eval!("IO::PRIORITY").unwrap();
+            assert_eq!(tokio::io::Ready::PRIORITY, writable.into());
         }
     }
 }

@@ -1,5 +1,5 @@
 use futures::Future;
-use magnus::ExceptionClass;
+use magnus::{ExceptionClass, QNIL};
 
 use super::prelude::*;
 
@@ -14,6 +14,21 @@ impl TokioScheduler {
         message: magnus::RString,
     ) -> Result<Value, Error> {
         crate::rtodo!("timeout_after")
+    }
+
+    pub async fn with_timeout_no_raise(
+        timeout: Option<TimeoutDuration>,
+        f: impl Future<Output = Result<Value, Error>>,
+    ) -> Result<Value, Error> {
+        if let Some(timeout) = timeout {
+            let dur = timeout.into_std();
+            match tokio::time::timeout(dur, f).await {
+                Ok(result) => result,
+                Err(_) => Ok(*QNIL),
+            }
+        } else {
+            f.await
+        }
     }
 
     pub async fn with_timeout(

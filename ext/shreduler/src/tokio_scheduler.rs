@@ -31,12 +31,12 @@ mod process_wait;
 mod timeout_after;
 
 use futures::Future;
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::fmt::Formatter;
-use std::mem::transmute;
 
 use tokio::sync::oneshot::Sender;
-use tokio::task::JoinSet;
+use tokio::task::{AbortHandle, JoinSet};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Registry};
 use tracing_tree::HierarchicalLayer;
@@ -46,7 +46,7 @@ use magnus::{
     ExceptionClass, RClass, TypedData,
 };
 use magnus::{prelude::*, DataType, Value};
-use tokio::runtime::{EnterGuard, Runtime};
+use tokio::runtime::Runtime;
 
 use crate::fiber::{Fiber, Suspended, Unknown};
 use crate::fiber_future::{FiberFuture, ResumableFiber};
@@ -55,9 +55,8 @@ use crate::gc_cell::GcCell;
 pub struct TokioScheduler {
     root_fiber: Fiber<Unknown>,
     futures_to_run: GcCell<JoinSet<ResumableFiber>>,
-    runtime: Option<Runtime>,
+    runtime: UnsafeCell<Option<Runtime>>,
     pub blockers: GcCell<HashMap<Fiber<Suspended>, Sender<Value>>>,
-    _enter_guard: Option<EnterGuard<'static>>, // needed for time::sleep
 }
 
 impl TokioScheduler {
@@ -75,17 +74,15 @@ impl TokioScheduler {
             .build()
             .map_err(|e| Error::new(base_error(), format!("{e}")))?;
 
-        // SAFETY: the lifetime of the guard is tied to the lifetime of this
-        // scheduler and Ruby object, so we consider it static.
+        // TODO: should remove this since the runtime is not static
         let enter_guard = runtime.enter();
-        let enter_guard = unsafe { transmute::<_, EnterGuard<'static>>(enter_guard) };
+        std::mem::forget(enter_guard);
 
         Ok(Self {
             root_fiber: Fiber::current().as_unknown(),
             futures_to_run: Default::default(),
-            runtime: Some(runtime),
+            runtime: UnsafeCell::new(Some(runtime)),
             blockers: Default::default(),
-            _enter_guard: Some(enter_guard),
         })
     }
 }
@@ -114,9 +111,11 @@ macro_rules! rtodo {
 
 impl TokioScheduler {
     fn runtime(&self) -> Result<&Runtime, Error> {
-        self.runtime
-            .as_ref()
-            .ok_or_else(|| Error::new(base_error(), "scheduler is closed".to_owned()))
+        if let Some(rt) = unsafe { &*self.runtime.get() } {
+            Ok(rt)
+        } else {
+            Err(Error::new(base_error(), "runtime is closed"))
+        }
     }
 
     pub fn spawn_and_transfer(
@@ -124,10 +123,17 @@ impl TokioScheduler {
         future: impl Future<Output = Result<Value, Error>> + 'static,
     ) -> Result<Value, Error> {
         {
-            let fiber_future = FiberFuture::new(future);
-            self.futures_to_run.try_borrow_mut()?.spawn(fiber_future);
+            self.spawn(future)?;
         }
         self.root_fiber.check_suspended()?.transfer(())
+    }
+
+    pub fn spawn(
+        &self,
+        future: impl Future<Output = Result<Value, Error>> + 'static,
+    ) -> Result<AbortHandle, Error> {
+        let fiber_future = FiberFuture::new(future);
+        Ok(self.futures_to_run.try_borrow_mut()?.spawn(fiber_future))
     }
 }
 
