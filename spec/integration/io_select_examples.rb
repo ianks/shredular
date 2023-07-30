@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "fiber_scheduler_spec/context"
 
 module FiberSchedulerSpec
@@ -50,14 +52,17 @@ RSpec.shared_examples FiberSchedulerSpec::IOSelect do
 
     context "with a timeout" do
       let(:order) { [] }
-      let(:pair) { UNIXSocket.pair }
+      let(:pair) { new_nonblock_unix_pair }
+      let(:results) { [] }
       let(:reader) { pair.first }
       let(:writer) { pair.last }
 
       def operations
+        reader.nonblock = true
+
         Fiber.schedule do
           order << 1
-          IO.select([reader], [$stdout], nil, 0.1)
+          results << IO.select([reader], [$stdout], nil, 0.1)
           order << 3
         end
         order << 2
@@ -67,6 +72,7 @@ RSpec.shared_examples FiberSchedulerSpec::IOSelect do
         setup
 
         expect(order).to eq (1..3).to_a
+        expect(results).to eq [[[], [$stdout], []]]
       end
 
       it "calls #io_select" do
@@ -79,23 +85,24 @@ RSpec.shared_examples FiberSchedulerSpec::IOSelect do
     end
   end
 
-  describe "using a real socket that cannot be read from" do
-    around do |example|
-      TestHelpers.in_fibered_env { example.run }
-    end
-
+  describe "#io_select using a real socket that cannot be read from" do
     it "behaves async" do
-      read_socket, write_socket = UNIXSocket.pair
       order = []
       results = []
+      read_socket, write_socket = new_nonblock_io_pipe
 
-      Fiber.schedule do
-        order << 1
-        results << IO.select([read_socket], [write_socket], nil, 5)
-        order << 2
+      TestHelpers.in_fibered_env do
+        Fiber.schedule do
+          order << 1
+          results << IO.select([], [write_socket], nil, 1)
+          write_socket.write_nonblock(".")
+          results << IO.select([read_socket], [], nil, 1)
+          order << 2
+        end
       end
 
-      expect(results).to eq [[[], [write_socket], []]]
+      expect(results[0]).to eq [[], [write_socket], []]
+      expect(results[1]).to eq [[read_socket], [], []]
       expect(order).to eq [1, 2]
     end
   end

@@ -16,6 +16,7 @@ impl TimeoutDuration {
         self.0 == Duration::from_secs(0)
     }
 
+    #[allow(dead_code)]
     pub const fn far_future() -> Self {
         Self(FAR_FUTURE)
     }

@@ -7,8 +7,18 @@ require "fiber_scheduler_spec"
 SCHEDULER_IMPLEMENTATION = case ENV.fetch("SCHEDULER_IMPLEMENTATION", nil)
                            when "async"
                              require "async"
-                             Async::Scheduler
+                             module Async
+                               class Scheduler
+                                 def io_select(...)
+                                   Thread.new { IO.select(...) }.value
+                                 end
+                               end
+                             end
 
+                             Async::Scheduler
+                           when "fiber_scheduler"
+                             require "fiber_scheduler"
+                             FiberScheduler
                            when "tokio", nil
                              require "shreduler"
                              TokioScheduler
@@ -20,17 +30,43 @@ module TestHelpers
   module_function
 
   def in_fibered_env
-    result = Thread.new do
+    thread = Thread.new do
       scheduler = SCHEDULER_IMPLEMENTATION.new
       Fiber.set_scheduler(scheduler)
       ret = yield
       scheduler.run
       ret
-    end.join(1)
+    end
 
-    raise "Fibered environment timed out" unless result.is_a?(Thread)
+    result = thread.join(2)
 
-    result
+    case result
+    when Thread
+      result
+    else
+      thread.kill
+      raise "Fibered environment timed out" unless result.is_a?(Thread)
+    end
+  end
+
+  def new_nonblock_unix_pair
+    require "io/nonblock"
+
+    UNIXSocket.pair.tap do |pair|
+      r, w = pair
+      r.nonblock = true
+      w.nonblock = true
+    end
+  end
+
+  def new_nonblock_io_pipe
+    require "io/nonblock"
+
+    IO.pipe.tap do |pair|
+      r, w = pair
+      r.nonblock = true
+      w.nonblock = true
+    end
   end
 end
 

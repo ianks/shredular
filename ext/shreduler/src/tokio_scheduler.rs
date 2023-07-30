@@ -34,6 +34,7 @@ use futures::Future;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::fmt::Formatter;
+use tracing::{debug, span, Level};
 
 use tokio::sync::oneshot::Sender;
 use tokio::task::{AbortHandle, JoinSet};
@@ -122,7 +123,13 @@ impl TokioScheduler {
         {
             self.spawn(future)?;
         }
-        self.root_fiber.check_suspended()?.transfer(())
+        debug!(?self, "Yielding to other fibers");
+        let my_span = span!(Level::TRACE, "spawn_and_transfer");
+        let my_span = my_span.enter();
+        let ret = self.root_fiber.check_suspended()?.transfer(());
+        drop(my_span);
+        debug!(?self, "Resumed fiber that yielded");
+        ret
     }
 
     #[tracing::instrument(skip(future))]

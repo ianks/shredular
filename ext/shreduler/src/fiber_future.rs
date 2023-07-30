@@ -4,7 +4,7 @@ use std::{
 };
 
 use futures::Future;
-use magnus::{Error, IntoValue, Value, QNIL};
+use magnus::{Error, Value, QNIL};
 use tracing::{debug, error, trace};
 
 use crate::fiber::{Fiber, Unknown};

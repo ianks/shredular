@@ -18,9 +18,11 @@ GEM
     diff-lcs (1.5.0)
     fiber-annotation (0.2.0)
     fiber-local (1.0.0)
+    fiber_scheduler (0.13.0)
     fiber_scheduler_spec (0.10.0)
       rspec (~> 3.11)
     io-event (1.2.2)
+    io-nonblock (0.2.0)
     json (2.6.3)
     maxitest (5.0.0)
       minitest (>= 5.14.0, < 5.19.0)
@@ -69,8 +71,10 @@ PLATFORMS
 
 DEPENDENCIES
   async
+  fiber_scheduler (~> 0.13.0)
   fiber_scheduler_spec (~> 0.10.0)
   io-event
+  io-nonblock (~> 0.2.0)
   maxitest (~> 5.0)
   rake (~> 13.0)
   rake-compiler

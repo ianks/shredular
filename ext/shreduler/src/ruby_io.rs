@@ -1,141 +1,78 @@
-use std::{future::IntoFuture, pin::Pin};
-
 use crate::{
-    intern::{self, object::empty_array},
+    intern::{self},
     new_base_error,
-    nilable::Nilable,
-    timeout_duration::TimeoutDuration,
 };
-use futures::{stream::FuturesUnordered, Future, StreamExt};
-use magnus::{Error, IntoValue, RArray, TryConvert, Value};
+use magnus::{Error, IntoValue, Value};
+use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use rustix::fd::RawFd;
-use tokio::io::{unix::AsyncFd, Interest};
-use tracing::{debug, error};
+use tokio::io::{
+    unix::{AsyncFd, AsyncFdReadyGuard},
+    Interest,
+};
+use tracing::debug;
 
-#[derive(Debug, Clone, Copy)]
-pub struct RubyIoSet(Option<RArray>, Interest);
-
-impl RubyIoSet {
-    #[tracing::instrument]
-    pub fn new_with_interest(
-        value: Option<Nilable<RArray>>,
-        interest: Interest,
-    ) -> Result<Self, Error> {
-        match value {
-            Some(Nilable::Value(value)) => Ok(Self(Some(value), interest)),
-            _ => Ok(Self(None, interest)),
-        }
-    }
+#[derive(Debug)]
+pub struct RubyIo {
+    value: Value,
+    async_fd: AsyncFd<RawFd>,
 }
-impl IntoFuture for RubyIoSet {
-    type Output = Result<RArray, Error>;
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'static>>;
-
-    #[tracing::instrument]
-    fn into_future(self) -> Self::IntoFuture {
-        let interest = self.1;
-        match self.0 {
-            None => {
-                debug!(?interest, "IO set was empty, sleeping forever");
-                Box::pin(async move {
-                    tokio::time::sleep(TimeoutDuration::far_future().into_std()).await;
-                    Ok(empty_array())
-                })
-            }
-            Some(array) if array.is_empty() => {
-                debug!(?interest, "IO set was empty, sleeping forever");
-                Box::pin(async move {
-                    tokio::time::sleep(TimeoutDuration::far_future().into_std()).await;
-                    Ok(empty_array())
-                })
-            }
-            Some(array) => {
-                let mut futures = FuturesUnordered::new();
-
-                for io in unsafe { array.as_slice() } {
-                    let io = RubyIo::new_unchecked(*io);
-
-                    let future = async move {
-                        let async_fd = io.into_async_fd_with_interest(self.1)?;
-                        let _guard = async_fd
-                            .ready(self.1)
-                            .await
-                            .map_err(|e| new_base_error!("Could not wait for interest: {}", e))?;
-
-                        let io = io.into_value();
-                        debug!(?io, "IO from set is ready");
-
-                        Ok::<_, Error>(io)
-                    };
-
-                    futures.push(future);
-                }
-
-                Box::pin(async move {
-                    // Placeholder for the final result.
-                    let result = RArray::new();
-
-                    // Poll the FuturesUnordered stream until all futures have completed.
-                    if let Some(io) = futures.next().await {
-                        debug!(
-                            ?futures,
-                            ?io,
-                            "IO from set has completed, pushing to result"
-                        );
-
-                        match io {
-                            Ok(io) => {
-                                debug!(?io, "Pushing IO to result array");
-                                // Push the ready IO to the result array.
-                                result.push(io).unwrap_or_else(|e| {
-                                    error!("Error pushing to RArray: {}", e);
-                                });
-                            }
-                            Err(error) => {
-                                error!(
-                                    ?error,
-                                    "Error joining on task while waiting for IO readiness"
-                                );
-                            }
-                        }
-                    }
-
-                    // futures.abort_all();
-
-                    debug!(?result, "All IOs ready");
-                    Ok(result)
-                })
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct RubyIo(Value);
 
 impl RubyIo {
-    fn new_unchecked(value: Value) -> Self {
-        Self(value)
+    pub fn new_with_interest(value: Value, interest: Interest) -> Result<Self, Error> {
+        let _io: Value = intern::class::io().funcall(intern::id::try_convert(), (value,))?;
+        let fileno: RawFd = value.funcall(intern::id::fileno(), ())?;
+        let async_fd = AsyncFd::with_interest(fileno, interest).map_err(|e| {
+            new_base_error!("Could not create AsyncFd from RawFd {}: {}", fileno, e)
+        })?;
+
+        Ok(Self { value, async_fd })
     }
 
-    pub fn into_async_fd_with_interest(self, interest: Interest) -> Result<AsyncFd<RawFd>, Error> {
-        let fileno: RawFd = self.0.funcall(intern::id::fileno(), ())?;
+    #[allow(dead_code)]
+    pub fn set_nonblocking(self) -> Result<Self, Error> {
+        let fd = *self.async_fd.get_ref();
+        let flags = fcntl(fd, FcntlArg::F_GETFL).map_err(|e| {
+            new_base_error!("Could not get file descriptor flags for {}: {}", fd, e)
+        })?;
+        let new_flags = OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK;
 
-        let fd = AsyncFd::with_interest(fileno, interest)
-            .map_err(|e| new_base_error!("Could not create AsyncFd from RawFd: {}", e))?;
+        fcntl(fd, FcntlArg::F_SETFL(new_flags)).map_err(|e| {
+            new_base_error!("Could not set file descriptor flags for {}: {}", fd, e)
+        })?;
 
-        Ok(fd)
+        Ok(self)
     }
-}
 
-impl TryConvert for RubyIo {
-    fn try_convert(value: Value) -> Result<Self, Error> {
-        intern::class::io().funcall(intern::id::try_convert(), (value,))
+    pub async fn ready(
+        &self,
+        interest: Interest,
+    ) -> Result<(Value, AsyncFdReadyGuard<'_, RawFd>), Error> {
+        let guard = {
+            let span = tracing::span!(
+                tracing::Level::DEBUG,
+                "waiting_for_interest",
+                ?self,
+                ?interest
+            );
+            let _ = span.enter();
+            self.async_fd.ready(interest).await.map_err(|e| {
+                new_base_error!(
+                    "Could not wait for interest {:?} on RawFd {}: {}",
+                    interest,
+                    *self.async_fd.get_ref(),
+                    e
+                )
+            })
+        }?;
+
+        debug!("IO is ready for interest {:?}", interest);
+
+        Ok((self.value, guard))
     }
 }
 
 impl IntoValue for RubyIo {
     fn into_value_with(self, _handle: &magnus::Ruby) -> Value {
-        self.0
+        self.value
     }
 }

@@ -21,6 +21,11 @@ Metrics/BlockLength:
     - 'test/**/*'
     - 'spec/**/*'
 
+Lint/IncompatibleIoSelectWithFiberScheduler:
+  Exclude:
+    - 'test/**/*'
+    - 'spec/**/*'
+
 Metrics/AbcSize:
   Exclude:
     - 'test/**/*'

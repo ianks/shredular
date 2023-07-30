@@ -36,7 +36,7 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-system("bundle exec rake compile")
+system("bundle exec rake compile") || abort("Compilation failed")
 ENV["RUST_LOG"] = options[:log_level]
 cmd = "bundle exec rspec #{ARGV.join(" ")} #{rspec_args.join(" ")}"
 puts "Running: #{cmd}"
