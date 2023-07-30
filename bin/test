@@ -3,17 +3,41 @@
 
 require "optparse"
 
-options = { log_level: "error" }
+options = { log_level: "warn" }
+rspec_args = []
 
 OptionParser.new do |opts|
   opts.banner = "Usage: test.rb [options]"
 
   opts.on("--log=level", "Set log level") do |level|
-    options[:log_level] = level
+    lev = if level == "all"
+            "trace"
+          else
+            "shreduler=#{level}"
+          end
+
+    options[:log_level] = lev
+  end
+
+  opts.on("--name=NAME", "Filter tests") do |filter|
+    rspec_args << "--example-matches" << filter.inspect if ARGV.empty?
+  end
+
+  opts.on("--failures", "Run failures") do
+    rspec_args << "--only-failures"
+  end
+
+  opts.on("--impl=NAME", "Run a specific implementation") do |name|
+    ENV["SCHEDULER_IMPLEMENTATION"] = name
+  end
+
+  opts.on("--fail-fast", "Stop running tests after first failure") do
+    rspec_args << "--fail-fast"
   end
 end.parse!
 
 system("bundle exec rake compile")
 ENV["RUST_LOG"] = options[:log_level]
-ENV["RUBYOPT"] = "-I#{File.expand_path("../test", __dir__)}"
-exec("bundle exec mtest #{ARGV[0] || "test"}")
+cmd = "bundle exec rspec #{ARGV.join(" ")} #{rspec_args.join(" ")}"
+puts "Running: #{cmd}"
+exec(cmd)

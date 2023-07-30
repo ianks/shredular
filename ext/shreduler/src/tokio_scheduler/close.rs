@@ -33,7 +33,7 @@ impl TokioScheduler {
 
                 match task {
                     Some(Ok(fiber)) => {
-                        match fiber.resume() {
+                        match fiber.resume_if_alive() {
                             Ok(value) => {
                                 info!(?value, "Fiber completed successfully");
                             }

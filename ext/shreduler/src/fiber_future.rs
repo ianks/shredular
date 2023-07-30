@@ -4,8 +4,8 @@ use std::{
 };
 
 use futures::Future;
-use magnus::{Error, Value};
-use tracing::trace;
+use magnus::{Error, IntoValue, Value, QNIL};
+use tracing::{debug, error, trace};
 
 use crate::fiber::{Fiber, Unknown};
 
@@ -27,12 +27,20 @@ impl ResumableFiber {
         Self { fiber, value }
     }
 
-    pub fn resume(self) -> Result<Value, Error> {
+    pub fn resume_if_alive(self) -> Result<Value, Error> {
+        if !self.fiber.is_alive() {
+            debug!("Fiber is dead, returning nil");
+            return Ok(*QNIL);
+        }
+
+        debug!(?self.value, "Resuming fiber");
+
         match self.value {
             Ok(value) => self.fiber.check_suspended()?.transfer((value,)),
-            Err(err) => {
+            Err(error) => {
                 let fiber = self.fiber.check_suspended()?;
-                let ret = fiber.raise(err)?;
+                error!(?error, "Error resuming fiber");
+                let ret = fiber.raise(error)?;
                 Ok(ret)
             }
         }

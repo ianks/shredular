@@ -1,5 +1,7 @@
 use tokio::sync::oneshot;
 
+use crate::new_base_error;
+
 use super::prelude::*;
 
 impl TokioScheduler {
@@ -28,10 +30,10 @@ impl TokioScheduler {
 
         let future = async move {
             let scheduler = rb_self.get();
-            let result = Self::with_timeout(timeout, async move {
+            let result = Self::with_timeout("unblocking fiber", timeout, async move {
                 let result = rx
                     .await
-                    .map_err(|_| Error::new(base_error(), "could not unblock fiber"))?;
+                    .map_err(|e| new_base_error!("Could not unblock fiber: {e}"))?;
                 Ok(result)
             })
             .await;
@@ -63,7 +65,7 @@ impl TokioScheduler {
 
         if let Some(tx) = removed {
             tx.send(true.into())
-                .map_err(|_| Error::new(base_error(), "could not unblock fiber"))?;
+                .map_err(|e| new_base_error!("could not unblock fiber: {e}"))?;
         }
 
         Ok(())

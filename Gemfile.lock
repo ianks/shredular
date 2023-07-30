@@ -70,6 +70,7 @@ PLATFORMS
 DEPENDENCIES
   async
   fiber_scheduler_spec (~> 0.10.0)
+  io-event
   maxitest (~> 5.0)
   rake (~> 13.0)
   rake-compiler

@@ -15,6 +15,10 @@ impl TimeoutDuration {
     pub fn is_zero(self) -> bool {
         self.0 == Duration::from_secs(0)
     }
+
+    pub const fn far_future() -> Self {
+        Self(FAR_FUTURE)
+    }
 }
 
 impl TryConvert for TimeoutDuration {

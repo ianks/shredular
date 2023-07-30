@@ -18,7 +18,7 @@ RSpec.describe SCHEDULER_IMPLEMENTATION do
   ].freeze
 
   cases.each do |host|
-    it "can resolve #{host}" do
+    it "can address_resolve #{host}" do
       called = false
 
       Fiber.schedule do

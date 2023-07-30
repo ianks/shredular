@@ -8,6 +8,7 @@ use magnus::{
     ArgList, Error, IntoValue, Module, RClass, RHash, RString, Symbol, Value,
 };
 use rb_sys::{rb_fiber_transfer, rb_fiber_yield};
+use tracing::debug;
 
 pub use self::state::{Running, State, Suspended, Terminated, Unknown};
 
@@ -167,6 +168,8 @@ impl Fiber<Suspended> {
     /// have never run yet, or has already finished running.
     #[allow(dead_code)]
     pub fn raise(self, error: Error) -> Result<Value, Error> {
+        debug!(?error, "Raising error in fiber");
+
         let result = match error {
             Error::Error(klass, message) => {
                 let message = RString::new(message.as_ref());
@@ -176,7 +179,7 @@ impl Fiber<Suspended> {
             Error::Exception(e) => protect(|| unsafe {
                 rb_sys::rb_fiber_raise(self.as_raw(), 1, &e.as_raw() as *const _ as _)
             }),
-            Error::Jump(_) => unreachable!("jump error should not be returned"),
+            Error::Jump(t) => Err(magnus::Error::Jump(t)),
         };
 
         result.map(|fiber| unsafe { Value::from_raw(fiber) })

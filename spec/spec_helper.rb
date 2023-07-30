@@ -8,9 +8,12 @@ SCHEDULER_IMPLEMENTATION = case ENV.fetch("SCHEDULER_IMPLEMENTATION", nil)
                            when "async"
                              require "async"
                              Async::Scheduler
-                           else
+
+                           when "tokio", nil
                              require "shreduler"
                              TokioScheduler
+                           else
+                             raise "Unknown scheduler implementation"
                            end
 
 module TestHelpers

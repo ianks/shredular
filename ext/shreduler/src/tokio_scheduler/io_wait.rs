@@ -1,6 +1,8 @@
+use crate::intern;
+
 use super::prelude::*;
 use bitflags::bitflags;
-use magnus::value::Id;
+
 use magnus::{IntoValue, TryConvert};
 use rb_sys::rb_io_event_t::*;
 use std::convert::TryFrom;
@@ -30,8 +32,7 @@ impl TokioScheduler {
         interests: RubyIoEvent,
         timeout: Option<TimeoutDuration>,
     ) -> Result<Value, magnus::Error> {
-        let fileno = *memoize!(Id: Id::new("fileno"));
-        let ruby_io: RawFd = io.funcall(fileno, ())?;
+        let ruby_io: RawFd = io.funcall(intern::id::fileno(), ())?;
         let interests = tokio::io::Interest::try_from(interests)?;
 
         let future = async move {

@@ -15,6 +15,8 @@ use rustix::process::{waitpid, Pid, RawPid, WaitOptions};
 use tokio::signal::unix::{self, SignalKind};
 use tracing::warn;
 
+use crate::new_base_error;
+
 use super::prelude::*;
 
 impl TokioScheduler {
@@ -39,12 +41,8 @@ pub struct PidWaiter {
 
 impl PidWaiter {
     pub fn new(pid: i32, flags: u32) -> Result<Self, Error> {
-        let signal = unix::signal(SignalKind::child()).map_err(|err| {
-            Error::new(
-                base_error(),
-                format!("failed to create signal watcher: {}", err),
-            )
-        })?;
+        let signal = unix::signal(SignalKind::child())
+            .map_err(|e| new_base_error!("failed to create signal watcher: {e}"))?;
 
         Ok(Self { pid, flags, signal })
     }
@@ -54,10 +52,9 @@ impl PidWaiter {
         let flags = self.flags;
 
         let Some(options) = WaitOptions::from_bits(flags) else {
-          return Err(Error::new(
-            base_error(),
-            format!("invalid process wait flags: {}", flags),
-          ));
+          return Err(
+            new_base_error!("invalid process wait flags: {flags}"),
+          );
         };
 
         // > 0  | Waits for the child whose process ID equals pid.
@@ -74,10 +71,7 @@ impl PidWaiter {
         } else if raw_pid > 0 {
             Some(Pid::from_raw(raw_pid).unwrap())
         } else {
-            return Err(Error::new(
-                base_error(),
-                format!("invalid pid: {}", raw_pid),
-            ));
+            return Err(new_base_error!("Invalid PID for process: {raw_pid}"));
         };
 
         match waitpid(pid, options) {
@@ -114,7 +108,7 @@ impl ProcessStatus {
 
         let allocated = Self::allocate()?;
         let typed_data = magnus::RTypedData::from_value(allocated)
-            .ok_or_else(|| Error::new(base_error(), "failed to allocate process status"))
+            .ok_or_else(|| new_base_error!("Failed to allocate process status"))
             .unwrap();
         let raw_typed_data = typed_data.as_raw() as *mut rb_sys::RTypedData;
         let raw_typed_data = unsafe { &mut *raw_typed_data };

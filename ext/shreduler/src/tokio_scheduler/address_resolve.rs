@@ -1,3 +1,5 @@
+use crate::new_base_error;
+
 use super::prelude::*;
 
 impl TokioScheduler {
@@ -24,10 +26,11 @@ impl TokioScheduler {
             }
 
             let host_lookup = tokio::net::lookup_host((host, 80)).await;
-            let host_lookup = host_lookup.map_err(|e| Error::new(base_error(), format!("{e}")));
+            let host_lookup =
+                host_lookup.map_err(|e| new_base_error!("Could not resolve hostname: {}", e))?;
             let addresses = RArray::new();
 
-            for address in host_lookup? {
+            for address in host_lookup {
                 addresses.push(address.ip().to_string())?;
             }
 

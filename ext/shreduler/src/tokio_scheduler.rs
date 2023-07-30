@@ -41,16 +41,15 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Registry};
 use tracing_tree::HierarchicalLayer;
 
-use magnus::{
-    exception::standard_error, gc, typed_data::DataTypeBuilder, DataTypeFunctions, Error,
-    ExceptionClass, RClass, TypedData,
-};
-use magnus::{prelude::*, DataType, Value};
+use magnus::{gc, typed_data::DataTypeBuilder, DataTypeFunctions, Error, RClass, TypedData};
+use magnus::{prelude::*, DataType, IntoValue, Value};
 use tokio::runtime::Runtime;
 
+use crate::errors::base_error;
 use crate::fiber::{Fiber, Suspended, Unknown};
 use crate::fiber_future::{FiberFuture, ResumableFiber};
 use crate::gc_cell::GcCell;
+use crate::new_base_error;
 
 pub struct TokioScheduler {
     root_fiber: Fiber<Unknown>,
@@ -68,11 +67,10 @@ impl TokioScheduler {
     /// Creates a new Tokio scheduler.
     pub fn new() -> Result<Self, Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
-            // .worker_threads(1)
             .enable_io()
             .enable_time()
             .build()
-            .map_err(|e| Error::new(base_error(), format!("{e}")))?;
+            .map_err(|e| new_base_error!("Could not build tokio runtime: {e}"))?;
 
         // TODO: should remove this since the runtime is not static
         let enter_guard = runtime.enter();
@@ -90,21 +88,19 @@ impl TokioScheduler {
 impl std::fmt::Debug for TokioScheduler {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokioScheduler")
-            .field("root_fiber", &self.root_fiber)
+            .field("root_fiber", &self.root_fiber.into_value())
             .field("futures_to_run", &self.futures_to_run)
-            .field("runtime", &"...")
-            .field("_enter_guard", &"...")
             .field("blockers", &self.blockers)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 #[macro_export]
 macro_rules! rtodo {
     ($method:literal) => {
-        Err(Error::new(
-            base_error(),
-            concat!("not implemented yet: ", $method),
+        Err(magnus::Error::new(
+            magnus::exception::not_imp_error(),
+            concat!("TokioScheduler#", $method),
         ))
     };
 }
@@ -118,6 +114,7 @@ impl TokioScheduler {
         }
     }
 
+    #[tracing::instrument(skip(future))]
     pub fn spawn_and_transfer(
         &self,
         future: impl Future<Output = Result<Value, Error>> + 'static,
@@ -128,6 +125,7 @@ impl TokioScheduler {
         self.root_fiber.check_suspended()?.transfer(())
     }
 
+    #[tracing::instrument(skip(future))]
     pub fn spawn(
         &self,
         future: impl Future<Output = Result<Value, Error>> + 'static,
@@ -168,14 +166,6 @@ impl DataTypeFunctions for TokioScheduler {
     }
 }
 
-pub fn base_error() -> ExceptionClass {
-    *memoize!(ExceptionClass: {
-        let c = TokioScheduler::class().define_error("Error", standard_error()).unwrap();
-        gc::register_mark_object(*c);
-        c
-    })
-}
-
 pub fn init() -> Result<(), Error> {
     Registry::default()
         .with(EnvFilter::from_default_env())
@@ -193,6 +183,7 @@ pub fn init() -> Result<(), Error> {
         method!(TokioScheduler::address_resolve, 1),
     )?;
     c.define_method("io_wait", method!(TokioScheduler::io_wait, 3))?;
+    c.define_method("io_select", method!(TokioScheduler::io_select, -1))?;
     c.define_method("kernel_sleep", method!(TokioScheduler::kernel_sleep, 1))?;
     c.define_method("close", method!(TokioScheduler::close, 0))?;
     c.define_method("fiber", method!(TokioScheduler::fiber, -1))?;

@@ -1,6 +1,10 @@
+mod errors;
 mod fiber;
 mod fiber_future;
 mod gc_cell;
+mod intern;
+mod nilable;
+mod ruby_io;
 mod timeout_duration;
 mod tokio_scheduler;
 
