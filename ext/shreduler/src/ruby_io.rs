@@ -94,6 +94,7 @@ impl BackingIo {
 
         match classname.as_ref() {
             "UNIXSocket" => {
+                return crate::rtodo!("Figure out UNIXSocket... blocking for some reason");
                 let std_file = unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw_fd) };
                 let io = tokio::net::UnixStream::from_std(std_file);
 

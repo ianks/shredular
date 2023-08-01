@@ -1,8 +1,10 @@
 use super::prelude::*;
 use crate::{io_buffer::RubyIoBuffer, new_base_error, ruby_io::RubyIo};
 use magnus::TryConvert;
+use nix::errno;
 use std::os::fd::RawFd;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest};
+use tokio::io::AsyncWrite;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest, ReadBuf};
 
 impl TokioScheduler {
     /// Invoked by IO#read to read length bytes from io into a specified buffer
@@ -39,52 +41,43 @@ impl TokioScheduler {
         } else {
             Some(timeout)
         };
+
         let mut io = RubyIo::new_with_interest(io, Interest::READABLE)?;
 
         let future = async move {
             let _nonblock = io.with_nonblock()?;
+            let buf = buffer.as_mut_slice()?;
+            let amount_to_read = if minimum_length_to_read == 0 {
+                buf.len()
+            } else {
+                minimum_length_to_read
+            };
 
-            // Prepare the buffer
-            let mut buf = vec![0; minimum_length_to_read];
-            let mut total_read = 0;
-
-            while total_read < minimum_length_to_read {
-                match io.read(&mut buf[total_read..]).await {
-                    Ok(amt) => {
-                        debug!(?amt, ?io, "Finished read from IO");
-                        total_read += amt;
-                        if amt == 0 || minimum_length_to_read == 0 {
-                            break; // EOF reached or IO not ready, break the loop
-                        }
-                    }
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            // If the IO is not ready, wait until it is.
-                            let (_, mut guard) =
-                                io.ready(Interest::READABLE).await.map_err(|e| {
-                                    new_base_error!(
-                                        "Could not wait for interest {:?} on RawFd {}: {}",
-                                        Interest::READABLE,
-                                        *io.async_fd().get_ref(),
-                                        e
-                                    )
-                                })?;
-                            guard.clear_ready();
-                            continue;
-                        } else {
-                            debug!(?e, ?io, "Error reading from IO");
-                            return Ok::<_, Error>((-nix::errno::errno() as isize, buf));
-                        }
-                    }
-                }
+            if minimum_length_to_read > buf.len() {
+                return Err(new_base_error!(
+                    "Cannot read more than the buffer size: {} > {}",
+                    minimum_length_to_read,
+                    buf.len()
+                ));
             }
 
-            Ok::<_, Error>((total_read as isize, buf))
+            match read_at_least(&mut io, buf, amount_to_read).await {
+                Ok(amt) => {
+                    debug!(?amt, ?io, "Finished read from IO");
+                    Ok::<_, Error>(amt as isize)
+                }
+                Err(err) => {
+                    debug!(?err, ?io, "Error reading from IO");
+                    let errno = err
+                        .raw_os_error()
+                        .unwrap_or(errno::Errno::UnknownErrno as i32);
+                    Ok::<_, Error>(-(errno as isize))
+                }
+            }
         };
 
         let future = Self::with_timeout("io_read", timeout, async move {
-            let (amt, buf) = future.await?;
-            buffer.set_string(buf)?;
+            let amt = future.await?;
             Ok(amt.into_value())
         });
 
@@ -117,7 +110,7 @@ impl TokioScheduler {
         &self,
         io: Value,
         buffer: Value,
-        mut minimum_length_to_be_written: usize,
+        minimum_length_to_be_written: usize,
         timeout: TimeoutDuration,
     ) -> Result<Value, magnus::Error> {
         let timeout = if TimeoutDuration::is_zero(timeout) {
@@ -127,53 +120,39 @@ impl TokioScheduler {
         };
 
         let mut io = RubyIo::new_with_interest(io, Interest::WRITABLE)?;
-        debug!(?io.async_fd, ?minimum_length_to_be_written, ?buffer, "IO write called");
         let buffer = RubyIoBuffer::try_convert(buffer)?;
-
-        if minimum_length_to_be_written == 0 {
-            minimum_length_to_be_written = buffer.size()?.to_usize()?;
-        }
-        let data = buffer.get_string(minimum_length_to_be_written)?;
 
         let future = async move {
             let _nonblock = io.with_nonblock()?;
+            let data = buffer.as_slice()?;
 
-            let mut total_written = 0;
-            let data_slice = unsafe { data.as_slice() };
+            let amount_to_write = if minimum_length_to_be_written == 0 {
+                data.len()
+            } else {
+                minimum_length_to_be_written
+            };
 
-            while total_written < minimum_length_to_be_written {
-                match io.write(&data_slice[total_written..]).await {
-                    Ok(amt) => {
-                        debug!(?amt, ?io, "Finished write to IO");
-                        total_written += amt;
-                        if amt == 0 {
-                            break; // IO not ready or EOF reached, break the loop
-                        }
-                    }
-                    Err(e) => {
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            // If the IO is not ready, wait until it is.
-                            let (_, mut guard) =
-                                io.ready(Interest::WRITABLE).await.map_err(|e| {
-                                    new_base_error!(
-                                        "Could not wait for interest {:?} on RawFd {}: {}",
-                                        Interest::WRITABLE,
-                                        *io.async_fd().get_ref(),
-                                        e
-                                    )
-                                })?;
-
-                            guard.clear_ready();
-                            continue;
-                        } else {
-                            debug!(?e, ?io, "Error writing to IO");
-                            return Ok::<_, Error>(-nix::errno::errno() as isize);
-                        }
-                    }
-                }
+            if minimum_length_to_be_written > data.len() {
+                return Err(new_base_error!(
+                    "Cannot write more than the buffer size: {} > {}",
+                    minimum_length_to_be_written,
+                    data.len()
+                ));
             }
 
-            Ok::<_, Error>(total_written as isize)
+            match write_at_least(&mut io, data, amount_to_write).await {
+                Ok(amt) => {
+                    debug!(?amt, ?io, "Finished write to IO");
+                    Ok::<_, Error>(amt as isize)
+                }
+                Err(errno) => {
+                    debug!(?errno, ?io, "Error writing to IO");
+                    let errno = errno
+                        .raw_os_error()
+                        .unwrap_or(errno::Errno::UnknownErrno as i32);
+                    Ok::<_, Error>(-(errno as isize))
+                }
+            }
         };
 
         let future = Self::with_timeout("io_write", timeout, async move {
@@ -209,4 +188,63 @@ impl TokioScheduler {
     ) -> Result<usize, Error> {
         crate::rtodo!("io_pwrite")
     }
+}
+pub async fn read_at_least<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut [u8],
+    min: usize,
+) -> Result<usize, std::io::Error> {
+    assert!(buf.len() >= min);
+    let mut total_read = 0;
+
+    while total_read < min {
+        let mut read_buf = ReadBuf::new(&mut buf[total_read..]);
+        match reader.read_buf(&mut read_buf).await {
+            Ok(just_read) => {
+                if just_read == 0 {
+                    // EOF reached
+                    break;
+                }
+                total_read += just_read;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // The IO operation would block,
+                // we'll need to wait until it's ready again before continuing
+                tokio::task::yield_now().await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(total_read)
+}
+
+#[tracing::instrument(skip(writer, buf))]
+pub async fn write_at_least<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    buf: &[u8],
+    min: usize,
+) -> Result<usize, std::io::Error> {
+    assert!(buf.len() >= min);
+    let mut total_written = 0;
+
+    while total_written < min {
+        match writer.write(&buf[total_written..]).await {
+            Ok(amt) => {
+                debug!(?amt, "Wrote to IO");
+                if amt == 0 {
+                    break;
+                }
+                total_written += amt;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // The IO operation would block,
+                // we'll need to wait until it's ready again before continuing
+                tokio::task::yield_now().await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(total_written)
 }

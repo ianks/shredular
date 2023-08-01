@@ -52,21 +52,22 @@ module TestHelpers
   def new_nonblock_unix_pair
     require "io/nonblock"
 
-    UNIXSocket.pair.tap do |pair|
-      r, w = pair
-      r.nonblock = true
-      w.nonblock = true
-    end
+    w, r = UNIXSocket.pair
+    w.close_read
+    r.close_write
+    w.nonblock = true
+    r.nonblock = true
+    [r, w]
   end
 
   def new_nonblock_io_pipe
     require "io/nonblock"
 
-    IO.pipe.tap do |pair|
-      r, w = pair
-      r.nonblock = true
-      w.nonblock = true
-    end
+    pair = IO.pipe
+    r, w = pair
+    r.nonblock = true
+    w.nonblock = true
+    [r, w]
   end
 end
 

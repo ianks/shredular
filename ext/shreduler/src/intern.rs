@@ -8,18 +8,6 @@ pub mod id {
     pub fn try_convert() -> Id {
         *memoize!(Id: Id::new("try_convert"))
     }
-
-    pub fn set_string() -> Id {
-        *memoize!(Id: Id::new("set_string"))
-    }
-
-    pub fn get_string() -> Id {
-        *memoize!(Id: Id::new("get_string"))
-    }
-
-    pub fn size() -> Id {
-        *memoize!(Id: Id::new("size"))
-    }
 }
 
 pub mod class {

@@ -7,23 +7,23 @@ RSpec.describe "#io_read and #io_write" do
   it "behaves async" do
     order = []
     results = []
-    read_socket, write_socket = new_nonblock_unix_pair
+    read_socket, write_socket = IO.pipe
 
     TestHelpers.in_fibered_env do
       Fiber.schedule do
         order << 1
         results << read_socket.read(4)
-        order << 2
+        order << 4
       end
 
       Fiber.schedule do
-        order << 3
+        order << 2
         write_socket.write("ruby")
-        order << 4
+        order << 3
       end
     end
 
-    expect(order).to eq [1, 3, 2, 4]
+    expect(order).to eq [1, 2, 3, 4]
     expect(results).to eq ["ruby"]
   end
 end

@@ -1,25 +1,51 @@
-use crate::intern;
+use std::{ffi::c_void, mem::MaybeUninit};
+
 use magnus::{
-    exception::type_error, Error, Integer, IntoValue, RString, RTypedData, TryConvert, Value,
+    exception::type_error,
+    rb_sys::{protect, AsRawValue},
+    Error, IntoValue, RTypedData, TryConvert, Value,
 };
 
 #[derive(Debug, Clone, Copy)]
 pub struct RubyIoBuffer(RTypedData);
 
 impl RubyIoBuffer {
-    pub fn set_string<T: AsRef<[u8]>>(self, bytes: T) -> Result<Integer, Error> {
-        let bytes = bytes.as_ref();
-        let rstring = RString::from_slice(bytes);
+    pub fn as_slice(&self) -> Result<&[u8], Error> {
+        let mut base = MaybeUninit::<*const c_void>::uninit();
+        let mut size = MaybeUninit::<rb_sys::size_t>::uninit();
 
-        self.0.funcall_public(intern::id::set_string(), (rstring,))
+        protect(|| {
+            unsafe {
+                rb_sys::rb_io_buffer_get_bytes_for_reading(
+                    self.0.as_raw(),
+                    base.as_mut_ptr(),
+                    size.as_mut_ptr(),
+                )
+            };
+            rb_sys::Qnil as _
+        })?;
+
+        Ok(unsafe { std::slice::from_raw_parts(base.assume_init() as _, size.assume_init() as _) })
     }
 
-    pub fn get_string(self, offset: usize) -> Result<RString, Error> {
-        self.0.funcall_public(intern::id::get_string(), (offset,))
-    }
+    pub fn as_mut_slice(&self) -> Result<&mut [u8], Error> {
+        let mut base = MaybeUninit::<*mut c_void>::uninit();
+        let mut size = MaybeUninit::<rb_sys::size_t>::uninit();
 
-    pub fn size(self) -> Result<Integer, Error> {
-        self.0.funcall_public(intern::id::size(), ())
+        protect(|| {
+            unsafe {
+                rb_sys::rb_io_buffer_get_bytes_for_writing(
+                    self.0.as_raw(),
+                    base.as_mut_ptr(),
+                    size.as_mut_ptr(),
+                )
+            };
+            rb_sys::Qnil as _
+        })?;
+
+        Ok(unsafe {
+            std::slice::from_raw_parts_mut(base.assume_init() as _, size.assume_init() as _)
+        })
     }
 }
 
@@ -91,12 +117,20 @@ mod tests {
     }
 
     #[ruby_test]
-    fn test_set_string_returns_length() {
+    fn test_as_mut_slice() {
         let io_buffer = eval!("IO::Buffer.new").unwrap();
         let io_buffer = RubyIoBuffer::try_convert(io_buffer).unwrap();
+        let slice = io_buffer.as_mut_slice().unwrap();
 
-        let length = io_buffer.set_string("hello").unwrap();
+        assert_eq!(&[0; 65536], slice);
+    }
 
-        assert_eq!(5, length.to_usize().unwrap());
+    #[ruby_test]
+    fn test_as_slice() {
+        let io_buffer = eval!("IO::Buffer.for('foo')").unwrap();
+        let io_buffer = RubyIoBuffer::try_convert(io_buffer).unwrap();
+        let slice = io_buffer.as_slice().unwrap();
+
+        assert_eq!(b"foo", slice);
     }
 }
