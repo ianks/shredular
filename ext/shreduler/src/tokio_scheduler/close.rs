@@ -1,6 +1,8 @@
-use std::time::Duration;
+use crate::thread::check_interrupts;
 
 use super::prelude::*;
+use std::time::Duration;
+use tracing::warn;
 
 impl TokioScheduler {
     /// Called when the current thread exits. The scheduler is expected to
@@ -28,14 +30,24 @@ impl TokioScheduler {
             loop {
                 let task = {
                     let mut futures_to_run = self.futures_to_run.try_borrow_mut()?;
-                    futures_to_run.join_next().await
+                    tokio::select! {
+                        task = futures_to_run.join_next() => task,
+                        Err(error) = check_interrupts() => {
+                            warn!(?error, "Thread was interrupted, aborting {} pending task(s)", futures_to_run.len());
+                            futures_to_run.abort_all();
+                            return Err(error)
+                        }
+                    }
                 };
 
                 match task {
                     Some(Ok(fiber)) => {
                         match fiber.resume_if_alive() {
-                            Ok(value) => {
+                            Ok(Some(value)) => {
                                 info!(?value, "Fiber completed successfully");
+                            }
+                            Ok(None) => {
+                                warn!("Fiber is dead, could not resume");
                             }
                             Err(error) => {
                                 error!(?error, "Error resuming fiber");
