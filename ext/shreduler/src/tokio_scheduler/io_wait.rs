@@ -1,4 +1,5 @@
-use crate::intern;
+
+use crate::ruby_io::RubyIo;
 
 use super::prelude::*;
 use bitflags::bitflags;
@@ -6,8 +7,8 @@ use bitflags::bitflags;
 use magnus::{IntoValue, TryConvert};
 use rb_sys::rb_io_event_t::*;
 use std::convert::TryFrom;
-use std::os::fd::RawFd;
-use tokio::io::unix::AsyncFd;
+
+
 use tokio::io::Interest;
 
 use super::base_error;
@@ -28,21 +29,16 @@ impl TokioScheduler {
     #[tracing::instrument]
     pub fn io_wait(
         &self,
-        io: Value,
+        io_value: Value,
         interests: RubyIoEvent,
         timeout: Option<TimeoutDuration>,
     ) -> Result<Value, magnus::Error> {
-        let ruby_io: RawFd = io.funcall(intern::id::fileno(), ())?;
         let interests = tokio::io::Interest::try_from(interests)?;
+        let ruby_io = RubyIo::new_with_interest(io_value, interests)?;
 
         let future = async move {
-            let async_fd = AsyncFd::with_interest(ruby_io, interests).map_err(|e| {
-                magnus::Error::new(
-                    base_error(),
-                    format!("Could not create AsyncFd from RawFd: {}", e),
-                )
-            })?;
-            let _ = async_fd.ready(interests).await.map_err(|e| {
+            let _nonblock = ruby_io.with_nonblock()?;
+            let _ = ruby_io.ready(interests).await.map_err(|e| {
                 magnus::Error::new(base_error(), format!("Could not wait for readable: {}", e))
             })?;
 

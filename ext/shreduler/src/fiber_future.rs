@@ -1,14 +1,11 @@
+use crate::fiber::{Fiber, Unknown};
+use futures::Future;
+use magnus::{Error, Value};
 use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-
-use futures::Future;
-use magnus::{Error, Value, QNIL};
 use tracing::{debug, error, trace};
-
-use crate::fiber::{Fiber, Unknown};
-
 pub type RubyFuture = Pin<Box<dyn Future<Output = Result<Value, Error>>>>;
 
 // TODO: look into using LocalSet
@@ -27,21 +24,21 @@ impl ResumableFiber {
         Self { fiber, value }
     }
 
-    pub fn resume_if_alive(self) -> Result<Value, Error> {
+    pub fn resume_if_alive(self) -> Result<Option<Value>, Error> {
         if !self.fiber.is_alive() {
             debug!("Fiber is dead, returning nil");
-            return Ok(*QNIL);
+            return Ok(None);
         }
 
         debug!(?self.value, "Resuming fiber");
 
         match self.value {
-            Ok(value) => self.fiber.check_suspended()?.transfer((value,)),
+            Ok(value) => self.fiber.check_suspended()?.transfer((value,)).map(Some),
             Err(error) => {
                 let fiber = self.fiber.check_suspended()?;
                 error!(?error, "Error resuming fiber");
                 let ret = fiber.raise(error)?;
-                Ok(ret)
+                Ok(Some(ret))
             }
         }
     }
@@ -72,17 +69,16 @@ impl Future for FiberFuture {
         // we need to move `future` and `fiber` out.  We're guaranteeing here
         // that we won't move out the value unless it's ready to produce an
         // output.
-        let FiberFuture { future, fiber } = unsafe { self.get_unchecked_mut() };
-        let future = unsafe { Pin::new_unchecked(future) };
+        let FiberFuture { future, fiber } = self.get_mut();
+        let future = Pin::new(future);
 
-        match Future::poll(future, cx) {
+        match future.poll(cx) {
             Poll::Ready(result) => {
                 trace!(?result, "FiberFuture ready");
                 let resumable = ResumableFiber::new(*fiber, result);
                 Poll::Ready(resumable)
             }
             Poll::Pending => {
-                trace!("FiberFuture not ready");
                 cx.waker().wake_by_ref();
                 Poll::Pending
             }

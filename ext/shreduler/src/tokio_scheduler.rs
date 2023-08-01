@@ -198,6 +198,8 @@ pub fn init() -> Result<(), Error> {
     c.define_method("process_wait", method!(TokioScheduler::process_wait, 2))?;
     c.define_method("block", method!(TokioScheduler::block, 2))?;
     c.define_method("unblock", method!(TokioScheduler::unblock, 2))?;
+    c.define_method("io_read", method!(TokioScheduler::io_read, 4))?;
+    c.define_method("io_write", method!(TokioScheduler::io_write, 4))?;
     c.define_method("run", method!(TokioScheduler::run, 0))?;
 
     Ok(())

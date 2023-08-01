@@ -3,8 +3,10 @@ mod fiber;
 mod fiber_future;
 mod gc_cell;
 mod intern;
+mod io_buffer;
 mod nilable;
 mod ruby_io;
+mod thread;
 mod timeout_duration;
 mod tokio_scheduler;
 
