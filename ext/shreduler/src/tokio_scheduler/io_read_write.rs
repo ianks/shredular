@@ -61,7 +61,7 @@ impl TokioScheduler {
                 ));
             }
 
-            match read_at_least(&mut io, buf, amount_to_read).await {
+            match read_at_least(io.backing_io_mut(), buf, amount_to_read).await {
                 Ok(amt) => {
                     debug!(?amt, ?io, "Finished read from IO");
                     Ok::<_, Error>(amt as isize)
@@ -140,7 +140,7 @@ impl TokioScheduler {
                 ));
             }
 
-            match write_at_least(&mut io, data, amount_to_write).await {
+            match write_at_least(io.backing_io_mut(), data, amount_to_write).await {
                 Ok(amt) => {
                     debug!(?amt, ?io, "Finished write to IO");
                     Ok::<_, Error>(amt as isize)

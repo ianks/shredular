@@ -11,10 +11,7 @@ use crate::{
 use magnus::{Error, IntoValue, Value};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use rustix::fd::{AsRawFd, FromRawFd, RawFd};
-use tokio::io::{
-    unix::{AsyncFd, AsyncFdReadyGuard},
-    AsyncRead, AsyncWrite, Interest, ReadBuf,
-};
+use tokio::io::{AsyncRead, AsyncWrite, Interest, ReadBuf, Ready};
 use tracing::debug;
 
 #[derive(Debug)]
@@ -94,7 +91,6 @@ impl BackingIo {
 
         match classname.as_ref() {
             "UNIXSocket" => {
-                return crate::rtodo!("Figure out UNIXSocket... blocking for some reason");
                 let std_file = unsafe { std::os::unix::net::UnixStream::from_raw_fd(raw_fd) };
                 let io = tokio::net::UnixStream::from_std(std_file);
 
@@ -131,6 +127,43 @@ impl BackingIo {
                 value,
                 raw_fd
             )),
+        }
+    }
+
+    pub async fn ready(&self, interest: Interest) -> Result<Ready, Error> {
+        match self {
+            Self::UnixSocket(socket) => socket.ready(interest).await.map_err(|e| {
+                new_base_error!(
+                    "Could not wait for interest {:?} on UNIXSocket {:?}: {}",
+                    interest,
+                    socket,
+                    e
+                )
+            }),
+            Self::TcpSocket(socket) => socket.ready(interest).await.map_err(|e| {
+                new_base_error!(
+                    "Could not wait for interest {:?} on TCPSocket {:?}: {}",
+                    interest,
+                    socket,
+                    e
+                )
+            }),
+            Self::File(_file) => {
+                // TODO: what about EAGAIN?
+                if interest.is_readable() && interest.is_writable() {
+                    Ok(Ready::READABLE | Ready::WRITABLE)
+                } else if interest.is_readable() {
+                    Ok(Ready::READABLE)
+                } else if interest.is_writable() {
+                    Ok(Ready::WRITABLE)
+                } else {
+                    Err(new_base_error!(
+                        "Could not wait for interest {:?} on File {:?}",
+                        interest,
+                        self
+                    ))
+                }
+            }
         }
     }
 }
@@ -190,34 +223,27 @@ impl Drop for NonBlockGuard {
 #[derive(Debug)]
 pub struct RubyIo {
     value: Value,
-    pub async_fd: Option<AsyncFd<BackingIo>>,
+    pub backing_io: Option<BackingIo>,
 }
 
 impl RubyIo {
-    pub fn new_with_interest(value: Value, interest: Interest) -> Result<Self, Error> {
+    pub fn new_with_interest(value: Value, _interest: Interest) -> Result<Self, Error> {
         let _io: Value = intern::class::io().funcall(intern::id::try_convert(), (value,))?;
         let fileno: RawFd = value.funcall(intern::id::fileno(), ())?;
         let backing_io = BackingIo::from_value_and_raw_fd(value, fileno)?;
-        let async_fd = AsyncFd::with_interest(backing_io, interest).map_err(|e| {
-            new_base_error!("Could not create AsyncFd from RawFd {}: {}", fileno, e)
-        })?;
 
         Ok(Self {
             value,
-            async_fd: Some(async_fd),
+            backing_io: Some(backing_io),
         })
     }
 
     pub fn with_nonblock(&self) -> Result<NonBlockGuard, Error> {
-        let fd = self.async_fd();
-        let raw = fd.get_ref().as_raw_fd();
-        NonBlockGuard::new(raw)
+        let fd = self.backing_io().as_raw_fd();
+        NonBlockGuard::new(fd)
     }
 
-    pub async fn ready(
-        &self,
-        interest: Interest,
-    ) -> Result<(Value, AsyncFdReadyGuard<'_, BackingIo>), Error> {
+    pub async fn ready(&self, interest: Interest) -> Result<(Value, Ready), Error> {
         let guard = {
             let span = tracing::span!(
                 tracing::Level::DEBUG,
@@ -226,11 +252,11 @@ impl RubyIo {
                 ?interest
             );
             let _ = span.enter();
-            self.async_fd().ready(interest).await.map_err(|e| {
+            self.backing_io().ready(interest).await.map_err(|e| {
                 new_base_error!(
                     "Could not wait for interest {:?} on RawFd {:?}: {}",
                     interest,
-                    *self.async_fd(),
+                    *self.backing_io(),
                     e
                 )
             })
@@ -241,68 +267,12 @@ impl RubyIo {
         Ok((self.value, guard))
     }
 
-    pub fn async_fd(&self) -> &AsyncFd<BackingIo> {
-        self.async_fd.as_ref().expect("RubyIo async_fd is None")
+    pub fn backing_io(&self) -> &BackingIo {
+        self.backing_io.as_ref().expect("RubyIo async_fd is None")
     }
 
-    pub fn async_fd_mut(&mut self) -> &mut AsyncFd<BackingIo> {
-        self.async_fd.as_mut().expect("RubyIo async_fd is None")
-    }
-}
-
-impl AsyncRead for RubyIo {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf,
-    ) -> Poll<io::Result<()>> {
-        let ruby_io = self.get_mut();
-        let backing_io = ruby_io.async_fd_mut().get_mut();
-        let backing_io = Pin::new(backing_io);
-        backing_io.poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for RubyIo {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let ruby_io = self.get_mut();
-        let backing_io = ruby_io.async_fd_mut().get_mut();
-        let backing_io = Pin::new(backing_io);
-        backing_io.poll_write(cx, buf)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let ruby_io = self.get_mut();
-        let backing_io = ruby_io.async_fd_mut().get_mut();
-        let backing_io = Pin::new(backing_io);
-        backing_io.poll_flush(cx)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        let ruby_io = self.get_mut();
-        let backing_io = ruby_io.async_fd_mut().get_mut();
-        let backing_io = Pin::new(backing_io);
-        backing_io.poll_shutdown(cx)
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[io::IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>> {
-        let ruby_io = self.get_mut();
-        let backing_io = ruby_io.async_fd_mut().get_mut();
-        let backing_io = Pin::new(backing_io);
-        backing_io.poll_write_vectored(cx, bufs)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        let backing_io = self.async_fd().get_ref();
-        backing_io.is_write_vectored()
+    pub fn backing_io_mut(&mut self) -> &mut BackingIo {
+        self.backing_io.as_mut().expect("RubyIo async_fd is None")
     }
 }
 
@@ -314,11 +284,10 @@ impl IntoValue for RubyIo {
 
 impl Drop for RubyIo {
     fn drop(&mut self) {
-        let async_fd = self.async_fd.take();
-        if let Some(async_fd) = async_fd {
-            let inner = async_fd.into_inner();
+        let io = self.backing_io.take();
+        if let Some(io) = io {
             // Ensure that the underlying file descriptor is not closed
-            std::mem::forget(inner)
+            std::mem::forget(io)
         }
     }
 }

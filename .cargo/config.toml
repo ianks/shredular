@@ -1,0 +1,2 @@
+[patch.crates-io]
+rb-sys = { path = "../../oxidize-rb/rb-sys/crates/rb-sys" }

@@ -15,6 +15,6 @@ RSpec.describe SCHEDULER_IMPLEMENTATION do
   include_examples FiberSchedulerSpec::Close
   include_examples FiberSchedulerSpec::TimeoutAfter
 
-  # include_examples FiberSchedulerSpec::SocketIO
+  include_examples FiberSchedulerSpec::SocketIO
   # include_examples FiberSchedulerSpec::NestedFiberSchedule
 end
