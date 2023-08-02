@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require "rspec"
 
 module FiberSchedulerSpec
@@ -6,14 +8,10 @@ module FiberSchedulerSpec
 end
 
 RSpec.shared_context FiberSchedulerSpec::Context do
-  unless method_defined?(:scheduler_class)
-    let(:scheduler_class) { described_class }
-  end
-  unless method_defined?(:scheduler)
-    subject(:scheduler) { scheduler_class.new }
-  end
+  let(:scheduler_class) { described_class } unless method_defined?(:scheduler_class)
+  subject(:scheduler) { scheduler_class.new } unless method_defined?(:scheduler)
   def setup
-    ::Fiber.set_scheduler(scheduler)
+    Fiber.set_scheduler(scheduler)
 
     operations
 
@@ -23,7 +21,7 @@ RSpec.shared_context FiberSchedulerSpec::Context do
   around do |example|
     result = Thread.new do
       example.run
-    end.join()
+    end.join
 
     expect(result).to be_a Thread # failure means spec timed out
   end

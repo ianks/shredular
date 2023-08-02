@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "context"
 
 module FiberSchedulerSpec
@@ -40,13 +42,16 @@ RSpec.shared_examples FiberSchedulerSpec::NestedFiberSchedule do
 
     context "without blocking operations" do
       def operations
-        Fiber.schedule do
+        ret = Fiber.schedule do
           order << 1
           Fiber.schedule do
             order << 2
           end
+
           order << 3
         end
+
+        expect(ret).not_to eq Fiber.current
       end
 
       it "completes all scheduled fibers" do
