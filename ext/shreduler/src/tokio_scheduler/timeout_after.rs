@@ -1,5 +1,3 @@
-
-
 use futures::Future;
 use magnus::{
     block::{block_given, Proc},
@@ -20,10 +18,11 @@ impl TokioScheduler {
         exception_class: ExceptionClass,
         message: magnus::RString,
     ) -> Result<Value, Error> {
+        let timeout_at = tokio::time::Instant::now() + duration.into_std();
         let fiber_to_timeout = Fiber::current().as_unknown();
 
         let timeout_future = async move {
-            tokio::time::sleep(duration.into_std()).await;
+            tokio::time::sleep_until(timeout_at).await;
             let error = exception_class.new_instance((message,))?;
             debug!(?error, ?duration, "Timeout waiting for block");
             let exception = exception_class.new_instance((message,))?;
@@ -47,8 +46,8 @@ impl TokioScheduler {
         f: impl Future<Output = Result<Value, Error>>,
     ) -> Result<Value, Error> {
         if let Some(timeout) = timeout {
-            let dur = timeout.into_std();
-            match tokio::time::timeout(dur, f).await {
+            let instant = tokio::time::Instant::now() + timeout.into_std();
+            match tokio::time::timeout_at(instant, f).await {
                 Ok(result) => result,
                 Err(_) => Ok(*QNIL),
             }
@@ -64,7 +63,8 @@ impl TokioScheduler {
     ) -> Result<Value, Error> {
         if let Some(timeout) = timeout {
             let duration = timeout.into_std();
-            match tokio::time::timeout(duration, f).await {
+            let instant = tokio::time::Instant::now() + duration;
+            match tokio::time::timeout_at(instant, f).await {
                 Ok(result) => result,
                 Err(error) => {
                     error!(?error, ?duration, "Timeout waiting for future");

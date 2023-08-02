@@ -9,14 +9,16 @@ impl TokioScheduler {
         &self,
         duration: crate::timeout_duration::TimeoutDuration,
     ) -> Result<Value, Error> {
+        let instant = tokio::time::Instant::now() + duration.into_std();
+
         if duration.is_zero() {
             let future = ready(Ok(0.into_value()));
             return self.spawn_and_transfer(future);
         }
 
         let future = async move {
+            tokio::time::sleep_until(instant).await;
             let dur = duration.into_std();
-            tokio::time::sleep(dur).await;
             Ok(dur.as_secs().into_value())
         };
 
