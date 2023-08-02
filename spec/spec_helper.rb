@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
-
-require "fiber_scheduler_spec"
+$LOAD_PATH.unshift File.expand_path("fiber_scheduler_spec", __dir__)
 
 SCHEDULER_IMPLEMENTATION = case ENV.fetch("SCHEDULER_IMPLEMENTATION", nil)
                            when "async"

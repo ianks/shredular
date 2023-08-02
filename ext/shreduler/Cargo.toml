@@ -17,7 +17,7 @@ magnus = { version = "0.5", features = ["rb-sys-interop"] }
 magnus-macros = "0.4.1"
 mio = "0.8.8"
 nix = "0.26.2"
-rb-sys = "0.9.77"
+rb-sys = { version = "0.9.77", features = ["stable-api"] }
 rustix = { version = "0.38.4", features = ["process"] }
 tokio = { version = "1.28.2", features = ["full", "tracing"] }
 tracing = "0.1.37"
@@ -25,7 +25,7 @@ tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 tracing-tree = "0.2.4"
 
 [dev-dependencies]
-rb-sys-test-helpers = "0.1.4"
+rb-sys-test-helpers = { git = "https://github.com/oxidize-rb/rb-sys" }
 
 [build-dependencies]
 rb-sys-env = "0.1.2"

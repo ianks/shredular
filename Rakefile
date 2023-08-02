@@ -5,7 +5,7 @@ require "rubocop/rake_task"
 require "rb_sys/extensiontask"
 require "rspec/core/rake_task"
 
-RSpec::Core::RakeTask.new(:test)
+RSpec::Core::RakeTask.new(:spec)
 
 RuboCop::RakeTask.new
 
@@ -17,7 +17,7 @@ namespace :test do
   desc "Run tests with async scheduler"
   task :async do
     ENV["SCHEDULER_IMPLEMENTATION"] = "async"
-    sh("bundle exec rake test")
+    sh("bundle exec rake spec")
   end
 
   %i[trace debug info warn error fatal].each do |level|
@@ -27,6 +27,14 @@ namespace :test do
       sh("bundle exec rake")
     end
   end
+
+  desc "Run cargo test"
+  task :cargo do
+    sh("cargo test")
+  end
 end
+
+desc "Run tests"
+task test: ["test:cargo", "spec"]
 
 task default: %i[compile test]

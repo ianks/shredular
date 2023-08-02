@@ -1,2 +1,3 @@
 [patch.crates-io]
-rb-sys = { path = "../../oxidize-rb/rb-sys/crates/rb-sys" }
+rb-sys = { git = "https://github.com/oxidize-rb/rb-sys" }
+rb-sys-test-helpers = { git = "https://github.com/oxidize-rb/rb-sys" }
