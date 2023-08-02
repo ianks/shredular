@@ -13,6 +13,7 @@ pub fn base_error() -> ExceptionClass {
     })
 }
 
+/// Returns Timeout::Error.
 pub fn timeout_error() -> ExceptionClass {
     *memoize!(ExceptionClass: {
       let c: ExceptionClass = intern::class::timeout().const_get("Error").unwrap();
@@ -21,11 +22,35 @@ pub fn timeout_error() -> ExceptionClass {
     })
 }
 
+/// Returns TokioScheduler::ReadyError.
+pub fn ready_error() -> ExceptionClass {
+    *memoize!(ExceptionClass: {
+        let c = TokioScheduler::class().define_error("ReadyError", base_error()).unwrap();
+        register_mark_object(*c);
+        c
+    })
+}
+
+/// New TokioScheduler::ReadyError.
+#[macro_export]
+macro_rules! new_ready_error {
+    ($($arg:tt)*) => {
+        magnus::Error::new($crate::errors::ready_error(), format!($($arg)*))
+    };
+}
+
 /// A macro with creates an Err(magnus::Error) with a fmt message.
 #[macro_export]
 macro_rules! new_base_error {
     ($($arg:tt)*) => {
         magnus::Error::new($crate::errors::base_error(), format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! new_type_error {
+    ($($arg:tt)*) => {
+        magnus::Error::new(magnus::exception::type_error(), format!($($arg)*))
     };
 }
 

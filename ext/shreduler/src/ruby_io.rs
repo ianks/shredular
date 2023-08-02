@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     intern::{self},
-    new_base_error,
+    new_base_error, new_ready_error, new_type_error,
 };
 use magnus::{Error, IntoValue, Value};
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
@@ -19,6 +19,7 @@ pub enum BackingIo {
     UnixSocket(tokio::net::UnixStream),
     TcpSocket(tokio::net::TcpStream),
     File(tokio::fs::File),
+    UdpSocket(tokio::net::UdpSocket),
 }
 
 impl AsyncRead for BackingIo {
@@ -31,6 +32,7 @@ impl AsyncRead for BackingIo {
             Self::UnixSocket(ref mut s) => AsyncRead::poll_read(Pin::new(s), cx, buf),
             Self::TcpSocket(ref mut s) => AsyncRead::poll_read(Pin::new(s), cx, buf),
             Self::File(ref mut f) => AsyncRead::poll_read(Pin::new(f), cx, buf),
+            Self::UdpSocket(ref mut _s) => todo!("UDP sockets are not supported yet"),
         }
     }
 }
@@ -45,6 +47,8 @@ impl AsyncWrite for BackingIo {
             Self::UnixSocket(ref mut s) => AsyncWrite::poll_write(Pin::new(s), cx, buf),
             Self::TcpSocket(ref mut s) => AsyncWrite::poll_write(Pin::new(s), cx, buf),
             Self::File(ref mut f) => AsyncWrite::poll_write(Pin::new(f), cx, buf),
+
+            Self::UdpSocket(_) => todo!("UDP sockets are not supported yet"),
         }
     }
 
@@ -53,6 +57,7 @@ impl AsyncWrite for BackingIo {
             Self::UnixSocket(ref mut s) => AsyncWrite::poll_flush(Pin::new(s), cx),
             Self::TcpSocket(ref mut s) => AsyncWrite::poll_flush(Pin::new(s), cx),
             Self::File(ref mut f) => AsyncWrite::poll_flush(Pin::new(f), cx),
+            Self::UdpSocket(_) => todo!("UDP sockets are not supported yet"),
         }
     }
 
@@ -61,6 +66,7 @@ impl AsyncWrite for BackingIo {
             Self::UnixSocket(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(s), cx),
             Self::TcpSocket(ref mut s) => AsyncWrite::poll_shutdown(Pin::new(s), cx),
             Self::File(ref mut f) => AsyncWrite::poll_shutdown(Pin::new(f), cx),
+            Self::UdpSocket(_) => todo!("UDP sockets are not supported yet"),
         }
     }
 
@@ -73,6 +79,8 @@ impl AsyncWrite for BackingIo {
             Self::UnixSocket(ref mut s) => AsyncWrite::poll_write_vectored(Pin::new(s), cx, bufs),
             Self::TcpSocket(ref mut s) => AsyncWrite::poll_write_vectored(Pin::new(s), cx, bufs),
             Self::File(ref mut f) => AsyncWrite::poll_write_vectored(Pin::new(f), cx, bufs),
+
+            Self::UdpSocket(_) => todo!("UDP sockets are not supported yet"),
         }
     }
 
@@ -81,6 +89,7 @@ impl AsyncWrite for BackingIo {
             Self::UnixSocket(ref s) => AsyncWrite::is_write_vectored(s),
             Self::TcpSocket(ref s) => AsyncWrite::is_write_vectored(s),
             Self::File(ref f) => AsyncWrite::is_write_vectored(f),
+            Self::UdpSocket(_) => todo!("UDP sockets are not supported yet"),
         }
     }
 }
@@ -95,7 +104,7 @@ impl BackingIo {
                 let io = tokio::net::UnixStream::from_std(std_file);
 
                 let io = io.map_err(|e| {
-                    new_base_error!(
+                    new_type_error!(
                         "Could not create tokio::net::UnixStream from RawFd {}: {}",
                         raw_fd,
                         e
@@ -109,11 +118,24 @@ impl BackingIo {
 
                 Ok(Self::File(io))
             }
+            "UDPSocket" => {
+                let std_file = unsafe { std::net::UdpSocket::from_raw_fd(raw_fd) };
+                let io = tokio::net::UdpSocket::from_std(std_file);
+                let io = io.map_err(|e| {
+                    new_type_error!(
+                        "Could not create tokio::net::UdpSocket from RawFd {}: {}",
+                        raw_fd,
+                        e
+                    )
+                })?;
+
+                Ok(Self::UdpSocket(io))
+            }
             "Socket" => {
                 let std_file = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
                 let io = tokio::net::TcpStream::from_std(std_file);
                 let io = io.map_err(|e| {
-                    new_base_error!(
+                    new_type_error!(
                         "Could not create tokio::net::TcpStream from RawFd {}: {}",
                         raw_fd,
                         e
@@ -122,7 +144,7 @@ impl BackingIo {
 
                 Ok(Self::TcpSocket(io))
             }
-            _ => Err(new_base_error!(
+            _ => Err(new_type_error!(
                 "Could not create BackingIo from value {:?} and RawFd {}",
                 value,
                 raw_fd
@@ -133,7 +155,7 @@ impl BackingIo {
     pub async fn ready(&self, interest: Interest) -> Result<Ready, Error> {
         match self {
             Self::UnixSocket(socket) => socket.ready(interest).await.map_err(|e| {
-                new_base_error!(
+                new_ready_error!(
                     "Could not wait for interest {:?} on UNIXSocket {:?}: {}",
                     interest,
                     socket,
@@ -141,7 +163,7 @@ impl BackingIo {
                 )
             }),
             Self::TcpSocket(socket) => socket.ready(interest).await.map_err(|e| {
-                new_base_error!(
+                new_ready_error!(
                     "Could not wait for interest {:?} on TCPSocket {:?}: {}",
                     interest,
                     socket,
@@ -157,13 +179,21 @@ impl BackingIo {
                 } else if interest.is_writable() {
                     Ok(Ready::WRITABLE)
                 } else {
-                    Err(new_base_error!(
+                    Err(new_ready_error!(
                         "Could not wait for interest {:?} on File {:?}",
                         interest,
                         self
                     ))
                 }
             }
+            Self::UdpSocket(socket) => socket.ready(interest).await.map_err(|e| {
+                new_ready_error!(
+                    "Could not wait for interest {:?} on UDPSocket {:?}: {}",
+                    interest,
+                    socket,
+                    e
+                )
+            }),
         }
     }
 }
@@ -174,6 +204,7 @@ impl AsRawFd for BackingIo {
             Self::UnixSocket(socket) => socket.as_raw_fd(),
             Self::TcpSocket(socket) => socket.as_raw_fd(),
             Self::File(file) => file.as_raw_fd(),
+            Self::UdpSocket(socket) => socket.as_raw_fd(),
         }
     }
 }
@@ -184,6 +215,7 @@ impl std::fmt::Display for BackingIo {
             Self::UnixSocket(_) => write!(f, "UNIXSocket"),
             Self::TcpSocket(_) => write!(f, "TCPSocket"),
             Self::File(_) => write!(f, "File"),
+            Self::UdpSocket(_) => write!(f, "UDPSocket"),
         }
     }
 }
@@ -243,17 +275,11 @@ impl RubyIo {
         NonBlockGuard::new(fd)
     }
 
+    #[tracing::instrument]
     pub async fn ready(&self, interest: Interest) -> Result<(Value, Ready), Error> {
         let guard = {
-            let span = tracing::span!(
-                tracing::Level::DEBUG,
-                "waiting_for_interest",
-                ?self,
-                ?interest
-            );
-            let _ = span.enter();
             self.backing_io().ready(interest).await.map_err(|e| {
-                new_base_error!(
+                new_ready_error!(
                     "Could not wait for interest {:?} on RawFd {:?}: {}",
                     interest,
                     *self.backing_io(),
