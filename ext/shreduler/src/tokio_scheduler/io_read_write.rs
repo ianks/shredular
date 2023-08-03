@@ -1,10 +1,11 @@
 use super::prelude::*;
+use crate::ruby_io::BackingIo;
 use crate::{io_buffer::RubyIoBuffer, new_base_error, ruby_io::RubyIo};
 use magnus::TryConvert;
 use nix::errno;
 use std::os::fd::RawFd;
-use tokio::io::AsyncWrite;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest, ReadBuf};
+use tokio::io::{AsyncReadExt, BufReader, BufWriter};
+use tokio::io::{AsyncWriteExt, Interest};
 
 impl TokioScheduler {
     /// Invoked by IO#read to read length bytes from io into a specified buffer
@@ -61,7 +62,8 @@ impl TokioScheduler {
                 ));
             }
 
-            match read_at_least(io.backing_io_mut(), buf, amount_to_read).await {
+            let bufreader = BufReader::new(io.backing_io_mut());
+            match read_at_least(bufreader, buf, amount_to_read).await {
                 Ok(amt) => {
                     debug!(?amt, ?io, "Finished read from IO");
                     Ok::<_, Error>(amt as isize)
@@ -140,7 +142,8 @@ impl TokioScheduler {
                 ));
             }
 
-            match write_at_least(io.backing_io_mut(), data, amount_to_write).await {
+            let bufwriter = BufWriter::new(io.backing_io_mut());
+            match write_at_least(bufwriter, data, amount_to_write).await {
                 Ok(amt) => {
                     debug!(?amt, ?io, "Finished write to IO");
                     Ok::<_, Error>(amt as isize)
@@ -189,62 +192,29 @@ impl TokioScheduler {
         crate::rtodo!("io_pwrite")
     }
 }
-pub async fn read_at_least<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut R,
+
+#[tracing::instrument(skip(reader, buf))]
+pub async fn read_at_least(
+    mut reader: BufReader<&mut BackingIo>,
     buf: &mut [u8],
     min: usize,
 ) -> Result<usize, std::io::Error> {
     assert!(buf.len() >= min);
-    let mut total_read = 0;
-
-    while total_read < min {
-        let mut read_buf = ReadBuf::new(&mut buf[total_read..]);
-        match reader.read_buf(&mut read_buf).await {
-            Ok(just_read) => {
-                if just_read == 0 {
-                    // EOF reached
-                    break;
-                }
-                total_read += just_read;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // The IO operation would block,
-                // we'll need to wait until it's ready again before continuing
-                tokio::task::yield_now().await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(total_read)
+    let ret = reader.read(&mut buf[..min]).await;
+    reader.flush().await?;
+    ret
 }
 
 #[tracing::instrument(skip(writer, buf))]
-pub async fn write_at_least<W: AsyncWrite + Unpin>(
-    writer: &mut W,
+pub async fn write_at_least(
+    mut writer: BufWriter<&mut BackingIo>,
     buf: &[u8],
     min: usize,
-) -> Result<usize, std::io::Error> {
+) -> Result<u64, std::io::Error> {
     assert!(buf.len() >= min);
-    let mut total_written = 0;
 
-    while total_written < min {
-        match writer.write(&buf[total_written..]).await {
-            Ok(amt) => {
-                debug!(?amt, "Wrote to IO");
-                if amt == 0 {
-                    break;
-                }
-                total_written += amt;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // The IO operation would block,
-                // we'll need to wait until it's ready again before continuing
-                tokio::task::yield_now().await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    writer.write_all(buf).await?;
+    writer.flush().await?;
 
-    Ok(total_written)
+    Ok(buf.len() as u64)
 }

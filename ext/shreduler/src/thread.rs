@@ -3,7 +3,7 @@ use tokio::time::Duration;
 
 /// Task which checks for Ruby thread interrupts every so often.
 pub async fn check_interrupts() -> Result<Value, Error> {
-    let mut interval = tokio::time::interval(Duration::from_millis(10));
+    let mut interval = tokio::time::interval(Duration::from_millis(1000));
 
     loop {
         interval.tick().await;

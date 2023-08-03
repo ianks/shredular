@@ -131,7 +131,7 @@ impl BackingIo {
 
                 Ok(Self::UdpSocket(io))
             }
-            "Socket" => {
+            "Socket" | "TCPServer" | "TCPSocket" => {
                 let std_file = unsafe { std::net::TcpStream::from_raw_fd(raw_fd) };
                 let io = tokio::net::TcpStream::from_std(std_file);
                 let io = io.map_err(|e| {
