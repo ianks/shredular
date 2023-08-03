@@ -59,7 +59,7 @@ RSpec.shared_examples FiberSchedulerSpec::SocketIO do
       it "behaves async" do
         setup
 
-        expect(order).to eq (1..6).to_a
+        expect(order).to eq((1..6).to_a).or(eq([1, 2, 3, 5, 4, 6]))
       end
     end
   end

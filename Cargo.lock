@@ -317,7 +317,7 @@ checksum = "b560c3c0284c9ec7c30b7ba823896387423225add3f107213a794b73853c7505"
 dependencies = [
  "magnus-macros",
  "rb-sys",
- "rb-sys-env 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rb-sys-env",
 ]
 
 [[package]]
@@ -508,16 +508,18 @@ dependencies = [
 
 [[package]]
 name = "rb-sys"
-version = "0.9.79"
-source = "git+https://github.com/oxidize-rb/rb-sys#dc8c0f60a9b534f2fb1fbe027748a7f0f5492c1f"
+version = "0.9.81"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a57240b308b155b09dce81e32829966a99f52d1088b45957e4283e526c5317a1"
 dependencies = [
  "rb-sys-build",
 ]
 
 [[package]]
 name = "rb-sys-build"
-version = "0.9.79"
-source = "git+https://github.com/oxidize-rb/rb-sys#dc8c0f60a9b534f2fb1fbe027748a7f0f5492c1f"
+version = "0.9.81"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f24ce877a4c5d07f06f6aa6fec3ac95e4b357b9f73b0f5445d8cbb7266d410e8"
 dependencies = [
  "bindgen",
  "lazy_static",
@@ -535,24 +537,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a35802679f07360454b418a5d1735c89716bde01d35b1560fc953c1415a0b3bb"
 
 [[package]]
-name = "rb-sys-env"
-version = "0.1.2"
-source = "git+https://github.com/oxidize-rb/rb-sys#dc8c0f60a9b534f2fb1fbe027748a7f0f5492c1f"
-
-[[package]]
 name = "rb-sys-test-helpers"
-version = "0.1.3"
-source = "git+https://github.com/oxidize-rb/rb-sys#dc8c0f60a9b534f2fb1fbe027748a7f0f5492c1f"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd592029353df7955a76ca0b1bf0d9ccc57feab96615f80d1fe756462864949"
 dependencies = [
  "rb-sys",
- "rb-sys-env 0.1.2 (git+https://github.com/oxidize-rb/rb-sys)",
+ "rb-sys-env",
  "rb-sys-test-helpers-macros",
 ]
 
 [[package]]
 name = "rb-sys-test-helpers-macros"
-version = "0.1.0"
-source = "git+https://github.com/oxidize-rb/rb-sys#dc8c0f60a9b534f2fb1fbe027748a7f0f5492c1f"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c21f156459adb755d58f73dbd783dc1de8b403635e637f7d1daec1c7a920c1f5"
 dependencies = [
  "quote",
  "syn 2.0.28",
@@ -675,7 +674,7 @@ dependencies = [
  "mio",
  "nix",
  "rb-sys",
- "rb-sys-env 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rb-sys-env",
  "rb-sys-test-helpers",
  "rustix",
  "tokio",

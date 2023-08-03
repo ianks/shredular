@@ -72,7 +72,7 @@ DEPENDENCIES
   fiber_scheduler (~> 0.13.0)
   io-event
   rake (~> 13.0)
-  rake-compiler
+  rake-compiler (= 1.2.4)
   rb_sys
   rspec
   rubocop (~> 1.21)

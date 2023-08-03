@@ -7,7 +7,12 @@ require "rspec/core/rake_task"
 
 RSpec::Core::RakeTask.new(:spec)
 
-RuboCop::RakeTask.new
+RuboCop::RakeTask.new(:rubocop)
+
+desc "Run clippy"
+task :clippy do
+  sh("cargo clippy --all-targets --all-features -- -D warnings")
+end
 
 RbSys::ExtensionTask.new("shreduler") do |ext|
   ext.lib_dir = "lib/shreduler"
@@ -36,5 +41,8 @@ end
 
 desc "Run tests"
 task test: ["test:cargo", "spec"]
+
+desc "Run lints"
+task lint: %i[rubocop clippy]
 
 task default: %i[compile test]

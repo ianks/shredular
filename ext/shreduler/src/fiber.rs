@@ -209,14 +209,6 @@ impl<S: State> Fiber<S> {
         Ok(Fiber(fiber, PhantomData::<Suspended>))
     }
 
-    pub fn spawn_nonblocking(block: Proc) -> Result<Fiber<Suspended>, Error> {
-        let fiber = Fiber::<Suspended>::new_nonblocking(block)?;
-        fiber.transfer(())?;
-
-        Ok(fiber)
-    }
-
-    #[allow(dead_code)]
     pub fn from_value(value: Value) -> Result<Fiber<Unknown>, Error> {
         if !unsafe { rb_sys::rb_obj_is_fiber(value.as_raw()) == rb_sys::Qtrue.into() } {
             return Err(Error::new(

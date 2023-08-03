@@ -47,7 +47,7 @@ RSpec.shared_examples FiberSchedulerSpec::Fiber do
 
     context "Fiber.schedule with an empty block" do
       def operations
-        fibers << Fiber.schedule {}
+        fibers << Fiber.schedule {} # rubocop:disable Lint/EmptyBlock
       end
 
       include_examples :examples
